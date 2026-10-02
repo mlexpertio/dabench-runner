@@ -1,0 +1,65 @@
+{
+  "name": "dabench",
+  "version": "0.1.0",
+  "description": "Run deterministic LLM benchmarks against any OpenAI-compatible endpoint (OpenRouter, OpenAI, Ollama, vLLM, llama.cpp) and get per-case results as JSON or CSV.",
+  "keywords": [
+    "llm",
+    "benchmark",
+    "evaluation",
+    "evals",
+    "tool-calling",
+    "structured-output",
+    "openrouter",
+    "ollama",
+    "vllm",
+    "llama.cpp"
+  ],
+  "homepage": "https://dabench.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mlexpertio/dabench-runner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mlexpertio/dabench-runner/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.10.0"
+  },
+  "bin": {
+    "dabench": "bin/dabench.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "suites/sample.suite.json"
+  ],
+  "exports": {
+    "./engine/*": "./src/engine/*.ts",
+    "./cli/*": "./src/cli/*.ts"
+  },
+  "scripts": {
+    "engine": "tsx src/cli/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "openai": "^7.23.0",
+    "p-retry": "^8.0.1",
+    "tsx": "^4.23.15",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^26.6.2",
+    "eslint": "^9.39.5",
+    "prettier": "^3.9.9",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.1"
+  }
+}
