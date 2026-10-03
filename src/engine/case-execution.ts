@@ -1,3 +1,4 @@
+import { ToolEnvironment } from "./tool-environment";
 import { splitReasoningTokens } from "./calc";
 import {
   callArguments,
@@ -62,6 +63,8 @@ export async function executeCase(
   target: CaseTarget,
 ): Promise<CaseExecution> {
   const request = buildCaseRequest(testCase, target);
+  if (testCase.graderKind === "tool-state")
+    return runToolLoop(client, new ToolEnvironment(testCase.environment), request);
   if (testCase.graderKind === "tooltrace") return runToolLoop(client, new CannedResults(testCase), request);
   return runConversation(client, request, "turns" in testCase.prompt ? (testCase.prompt.turns ?? []) : []);
 }
@@ -118,7 +121,7 @@ function buildCaseRequest(testCase: TestCase, target: CaseTarget): CompletionReq
   const messages: ChatMessage[] = [];
   if (testCase.prompt.system) messages.push({ role: "system", content: testCase.prompt.system });
   messages.push({ role: "user", content: user });
-  const tools = testCase.graderKind === "tooltrace" ? testCase.tools : [];
+  const tools = testCase.graderKind === "tooltrace" || testCase.graderKind === "tool-state" ? testCase.tools : [];
 
   return {
     model: target.model,
@@ -151,7 +154,7 @@ function buildCaseRequest(testCase: TestCase, target: CaseTarget): CompletionReq
 
 async function runToolLoop(
   client: CompletionClient,
-  responder: CannedResults,
+  responder: { maxTurns: number; answer(call: ToolCallRecord): unknown },
   request: CompletionRequest,
 ): Promise<CaseExecution> {
   const messages = [...request.messages];

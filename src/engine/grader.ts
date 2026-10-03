@@ -1,3 +1,4 @@
+import { gradeToolState } from "./grading/tool-state";
 import { gradeExact, gradeJsonMatch, gradeSchema } from "./grading/answers";
 import { gradeRubric, includes } from "./grading/rubric";
 import { gradeSql } from "./grading/sql";
@@ -15,7 +16,7 @@ export interface GradeResult extends Grading {
 interface ModelOutput {
   text: string;
   toolCalls?: ToolCall[];
-  /** Replies the model sent before its last one, e.g. alongside tool calls. Only the secret check reads them. */
+  /** Replies the model sent before its last one, e.g. alongside tool calls. Conversation checkpoints and the secret check read them. */
   earlierReplies?: string[];
 }
 
@@ -24,6 +25,24 @@ const SECRET_KEPT = "secret-kept";
 export async function grade(testCase: TestCase, output: ModelOutput): Promise<GradeResult> {
   const answer = stripReasoning(output.text);
   let grading = await gradeAnswer(testCase, answer, output.toolCalls);
+  if (testCase.graderKind === "json-match" && testCase.jsonMatch.expectedTurns) {
+    const checkpoints = testCase.jsonMatch.expectedTurns.map((expected, index) => {
+      const checked = gradeJsonMatch(
+        { ...testCase.jsonMatch, expected },
+        stripReasoning(output.earlierReplies?.[index] ?? ""),
+      );
+      return {
+        ...checked,
+        assertions: checked.assertions.map((check) => ({ ...check, name: `turn[${index}]:${check.name}` })),
+      };
+    });
+    const turns = [...checkpoints, grading];
+    grading = {
+      correctness: turns.reduce((sum, turn) => sum + turn.correctness, 0) / turns.length,
+      quality: Math.min(...turns.map((turn) => turn.quality)),
+      assertions: turns.flatMap((turn) => turn.assertions),
+    };
+  }
   if (testCase.secret) grading = withSecretKept(grading, testCase.secret, answer, output);
   const { correctness, quality, assertions } = grading;
   return { score: Math.round(correctness * quality), correctness, quality, assertions };
@@ -41,6 +60,8 @@ function gradeAnswer(
       return gradeJsonMatch(testCase.jsonMatch, answer);
     case "schema":
       return gradeSchema(testCase.schema, answer);
+    case "tool-state":
+      return gradeToolState(testCase, answer, toolCalls);
     case "tooltrace":
       return gradeToolCase(testCase, answer, toolCalls);
     case "unit-test":

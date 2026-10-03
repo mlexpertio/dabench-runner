@@ -50,11 +50,16 @@ A suite is one JSON file. It has an `id`, a `version`, the `categories` in displ
 | `json-match` | is JSON equal to the expected value                                                             |
 | `schema`     | is JSON that validates against a JSON Schema                                                    |
 | `tooltrace`  | makes the expected tool calls, in order, with the expected arguments                            |
+| `tool-state` | reaches the expected simulated state within a call budget without invalid or forbidden actions  |
 | `unit-test`  | is JavaScript that passes the case's tests, run in a sandboxed Node.js process                  |
 | `rubric`     | passes every required text check, such as contains, does not contain, a regex or a length limit |
 | `sql`        | is a SQLite query that returns the expected rows from a seeded database                         |
 
 [`src/engine/suite.ts`](src/engine/suite.ts) defines every field. Edit the file `init` writes and run `validate` after each change. Any language can write the file, for example Python's `json.dump`. The CLI only reads suites as JSON and never runs them as code.
+
+A `tool-state` case declares tools and an `environment` with `initialState`, `actions`, `expectedState` and `maxCalls`. Each action has a tool name, exact arguments, a fixed result, optional `when` conditions and optional `set` updates. Conditions compare entire values at the named top-level state keys; updates replace those keys. Exactly one action must match a call and the current state. Unknown, ambiguous or over-budget actions return `action_not_available` and fail the case. Grading replays the calls and checks the terminal state, forbidden calls and final reply. The model sees tool interfaces and results, never the hidden state or action rules. State-based tasks allow at most 31 calls plus a final reply turn.
+
+A JSON conversation may set `jsonMatch.expectedTurns` to the expected replies before the final answer. Its length must equal `prompt.turns.length`; `jsonMatch.expected` still checks the final reply. Correctness is the mean of the per-reply correctness values, and format quality is the lowest per-reply quality. Cases without checkpoints retain final-answer grading.
 
 The sample ([`suites/sample.suite.json`](suites/sample.suite.json)) shows what each DaBench category tests. DaBench board scores come from a separate private suite.
 

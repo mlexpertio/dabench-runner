@@ -11,7 +11,16 @@ export const Sha256HexSchema = z
 
 const isoTimestamp = z.string().refine((v) => !Number.isNaN(Date.parse(v)), "expected an ISO-8601 timestamp");
 
-export const GraderKind = z.enum(["exact", "json-match", "schema", "tooltrace", "unit-test", "rubric", "sql"]);
+export const GraderKind = z.enum([
+  "exact",
+  "json-match",
+  "schema",
+  "tooltrace",
+  "tool-state",
+  "unit-test",
+  "rubric",
+  "sql",
+]);
 export type GraderKind = z.infer<typeof GraderKind>;
 
 const AssertionSchema = z.object({

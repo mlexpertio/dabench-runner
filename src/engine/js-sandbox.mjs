@@ -18,7 +18,7 @@ function call({ setup, code, entry, argsJson }) {
     codeGeneration: { strings: false, wasm: false },
     microtaskMode: "afterEvaluate",
   });
-  const invocation = `${setup ?? ""}\n${code}\n;JSON.stringify({value:(${entry})(...${argsJson})});`;
+  const invocation = `${setup ?? ""}\n${code}\n;JSON.stringify({value:(${entry})(...JSON.parse(${JSON.stringify(argsJson)}))});`;
   const serialized = new Script(invocation).runInContext(context, { timeout: testTimeoutMs });
   if (typeof serialized !== "string") throw new Error("function result is not JSON-serializable");
   return { ok: true, value: JSON.parse(serialized).value };

@@ -2,8 +2,22 @@ import { z } from "zod";
 import { JsonSchemaSpecSchema } from "./json-schema";
 import { CategoryDescriptorSchema, ToolCallRecordSchema } from "./schema";
 
+type JsonValue = z.infer<ReturnType<typeof z.json>>;
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  if (typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return (prototype === Object.prototype || prototype === null) && Object.values(value).every(isJsonValue);
+}
+
+const JsonValueSchema = z.custom<JsonValue>(isJsonValue, "expected a JSON value");
+
 const JsonMatchSpecSchema = z.object({
   expected: z.json(),
+  expectedTurns: z.array(z.json()).min(1).optional(),
   mode: z.literal("exact").default("exact"),
   arrayOrder: z.enum(["ordered", "unordered"]).default("ordered"),
   extraction: z.literal("strict").optional(),
@@ -107,8 +121,8 @@ const UnitTestSpecSchema = z
       .array(
         z.object({
           name: z.string().min(1),
-          args: z.array(z.json()),
-          expected: z.json(),
+          args: z.array(JsonValueSchema),
+          expected: JsonValueSchema,
         }),
       )
       .min(1),
@@ -195,6 +209,40 @@ const ToolTraceCaseSchema = CaseBaseSchema.extend({
   });
 export type ToolTraceCase = z.infer<typeof ToolTraceCaseSchema>;
 
+const MAX_STATE_TOOL_CALLS = 31;
+const StateSchema = z.record(z.string(), z.json());
+const ToolStateCaseSchema = CaseBaseSchema.extend({
+  graderKind: z.literal("tool-state"),
+  prompt: ToolPromptSchema,
+  tools: z.array(ToolDefinitionSchema).min(1),
+  environment: z
+    .object({
+      initialState: StateSchema,
+      actions: z
+        .array(
+          ToolCallRecordSchema.extend({
+            when: StateSchema.optional(),
+            result: z.json(),
+            set: StateSchema.optional(),
+          }).strict(),
+        )
+        .min(1),
+      expectedState: StateSchema.refine((state) => Object.keys(state).length > 0, "expected state must not be empty"),
+      maxCalls: z.number().int().min(1).max(MAX_STATE_TOOL_CALLS),
+    })
+    .strict(),
+  forbiddenCalls: z.array(ToolCallRecordSchema).min(1).optional(),
+  reply: z.array(RubricCriterionSchema).min(1),
+})
+  .strict()
+  .superRefine((c, ctx) => {
+    const declared = new Set(c.tools.map((t) => t.name));
+    if (declared.size !== c.tools.length) ctx.addIssue({ code: "custom", message: "tool names must be unique" });
+    requireDeclaredTools(ctx, declared, c.environment.actions, "environment.actions", "action");
+    requireDeclaredTools(ctx, declared, c.forbiddenCalls, "forbiddenCalls", "forbidden call");
+  });
+export type ToolStateCase = z.infer<typeof ToolStateCaseSchema>;
+
 const RubricCaseSchema = CaseBaseSchema.extend({
   graderKind: z.literal("rubric"),
   rubric: z.array(RubricCriterionSchema).min(1),
@@ -209,9 +257,20 @@ const RubricCaseSchema = CaseBaseSchema.extend({
 
 export const TestCaseSchema = z.discriminatedUnion("graderKind", [
   CaseBaseSchema.extend({ graderKind: z.literal("exact"), expected: z.string() }).strict(),
-  CaseBaseSchema.extend({ graderKind: z.literal("json-match"), jsonMatch: JsonMatchSpecSchema }).strict(),
+  CaseBaseSchema.extend({ graderKind: z.literal("json-match"), jsonMatch: JsonMatchSpecSchema })
+    .strict()
+    .superRefine((c, ctx) => {
+      if (c.jsonMatch.expectedTurns && c.jsonMatch.expectedTurns.length !== (c.prompt.turns?.length ?? 0)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["jsonMatch", "expectedTurns"],
+          message: "one checkpoint is required for each reply before the final turn",
+        });
+      }
+    }),
   CaseBaseSchema.extend({ graderKind: z.literal("schema"), schema: JsonSchemaSpecSchema }).strict(),
   ToolTraceCaseSchema,
+  ToolStateCaseSchema,
   CaseBaseSchema.extend({ graderKind: z.literal("unit-test"), unitTests: UnitTestSpecSchema }).strict(),
   RubricCaseSchema,
   CaseBaseSchema.extend({ graderKind: z.literal("sql"), sql: SqlSpecSchema }).strict(),

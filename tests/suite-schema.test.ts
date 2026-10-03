@@ -153,3 +153,17 @@ describe("scripted turns", () => {
     expect(TestCaseSchema.safeParse(withTools).success).toBe(false);
   });
 });
+it("preserves prototype-named JSON keys in grading inputs and expected outputs", () => {
+  const value = JSON.parse('{"__proto__":{"nested":{"__proto__":7}},"constructor":8}');
+  const parsed = TestCaseSchema.parse({
+    id: "own-keys",
+    category: "coding",
+    tier: 2,
+    graderKind: "unit-test",
+    prompt: { user: "Preserve every own JSON key." },
+    unitTests: { entry: "solve", cases: [{ name: "prototype", args: [value], expected: value }] },
+  });
+  if (parsed.graderKind !== "unit-test") throw new Error("expected coding task");
+  expect(JSON.stringify(parsed.unitTests.cases[0].args[0])).toBe(JSON.stringify(value));
+  expect(JSON.stringify(parsed.unitTests.cases[0].expected)).toBe(JSON.stringify(value));
+});
