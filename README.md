@@ -24,6 +24,28 @@ npx dabench run --suite mybench/suite.json --provider ollama --model qwen3:8b
 
 Run `npx dabench` to see every option.
 
+## OpenRouter service tiers
+
+Choose a service tier with `--service-tier`. OpenRouter runs use `default` when no tier is supplied.
+
+```sh
+npx dabench run --suite mybench/suite.json --provider openrouter --model openai/gpt-5 --service-tier flex
+```
+
+| Tier        | Capacity                                               |
+| ----------- | ------------------------------------------------------ |
+| `default`   | Standard capacity and pricing.                         |
+| `flex`      | Lower cost, higher latency and lower availability.     |
+| `priority`  | Faster capacity at a higher price.                     |
+| `fast`      | Alias for `priority`.                                  |
+| `ultrafast` | Lowest latency on supported models, at a higher price. |
+
+The flag works with `--provider openrouter` and OpenRouter `--config` files. It overrides `service_tier` in `--params`, `--params-file`, or `config.providerParameters`. Those JSON settings still work when the flag is omitted. Invalid tiers and use of the flag with another provider fail before the benchmark starts.
+
+The runner selects the requested tier before comparing endpoint precision, health and price. `--endpoint openai` restricts selection to that provider. Exact endpoint tags must be compatible with the tier, for example `--service-tier flex --endpoint openai/flex`. The `openai/fast` and `openai/priority` tags are interchangeable.
+
+If a tier is absent, `priority` uses standard capacity, and `ultrafast` tries priority before standard. Flex uses standard capacity only when the model has no flex endpoints at all. These choices follow [OpenRouter's service-tier behavior](https://openrouter.ai/docs/guides/features/service-tiers). The runner then pins one endpoint with fallbacks disabled and records its pricing. Request failures do not switch to another endpoint.
+
 ## Results as CSV or JSON lines
 
 ```sh

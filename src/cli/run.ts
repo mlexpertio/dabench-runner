@@ -200,7 +200,7 @@ async function pinServingEndpoint(config: RunConfig, requested: string | undefin
       apiKey: process.env[openai.apiKeyEnv],
       headers: openai.headers,
     });
-    return pickEndpoint(endpoints, requested);
+    return pickEndpoint(endpoints, requested, config.config.providerParameters.service_tier);
   } catch (err) {
     fail(`can't pin an OpenRouter endpoint for ${model.id}: ${errorMessage(err)}`);
   }

@@ -9,7 +9,20 @@ import { CaseSubset } from "dabench/engine/subset";
 const COMMAND = "npm run engine --";
 const SUITE = "suites/sample.suite.json";
 const LOCAL = ["--provider", "llama.cpp", "--model", "gemma", "--suite", SUITE];
+const OPENROUTER = ["--provider", "openrouter", "--model", "acme/x", "--suite", SUITE];
 const CONFIG = join(mkdtempSync(join(tmpdir(), "dabench-run-inputs-")), "run.json");
+const ROUTER_CONFIG = join(mkdtempSync(join(tmpdir(), "dabench-router-inputs-")), "run.json");
+const PARAMS_FILE = `${ROUTER_CONFIG}.params.json`;
+writeFileSync(PARAMS_FILE, JSON.stringify({ service_tier: "flex", seed: 42 }));
+writeFileSync(
+  ROUTER_CONFIG,
+  JSON.stringify({
+    suite: SUITE,
+    model: { id: "acme/x", name: "Acme", provider: "openrouter" },
+    config: { providerParameters: { service_tier: "priority", seed: 42 } },
+    openai: { harness: "openrouter" },
+  }),
+);
 writeFileSync(
   CONFIG,
   JSON.stringify({
@@ -25,6 +38,46 @@ function inputs(argv: string[]) {
 }
 
 describe("run inputs", () => {
+  it.each([
+    [[...OPENROUTER, "--service-tier", "urgent"], "default, flex, priority, fast, ultrafast"],
+    [[...OPENROUTER, "--service-tier"], "--service-tier needs a value"],
+    [[...OPENROUTER, "--service-tier="], "missing required --service-tier"],
+    [[...LOCAL, "--service-tier", "flex"], "--service-tier requires an OpenRouter run"],
+    [["--config", CONFIG, "--service-tier", "flex"], "--service-tier requires an OpenRouter run"],
+    [[...OPENROUTER, "--params", '{"service_tier":"urgent"}'], "default, flex, priority, fast, ultrafast"],
+    [[...OPENROUTER, "--params", '{"service_tier":null}'], "default, flex, priority, fast, ultrafast"],
+  ])("rejects invalid tier options %j", (argv, message) => {
+    expect(() => inputs(argv)).toThrow(CliError);
+    expect(() => inputs(argv)).toThrow(message);
+  });
+
+  it("defaults OpenRouter runs to the default service tier without changing local runs", () => {
+    expect(inputs(OPENROUTER).config.config.providerParameters).toEqual({ service_tier: "default" });
+    expect(inputs(LOCAL).config.config.providerParameters).toEqual({});
+  });
+
+  it.each([
+    [[...OPENROUTER, "--params", '{"service_tier":"priority","seed":42}'], "priority"],
+    [[...OPENROUTER, "--params", '{"service_tier":"priority","seed":42}', "--service-tier", "default"], "default"],
+    [["--config", ROUTER_CONFIG], "priority"],
+    [["--config", ROUTER_CONFIG, "--service-tier", "flex"], "flex"],
+    [[...OPENROUTER, "--params-file", PARAMS_FILE], "flex"],
+    [[...OPENROUTER, "--params-file", PARAMS_FILE, "--service-tier", "ultrafast"], "ultrafast"],
+  ])("resolves the tier from %j", (argv, tier) => {
+    const run = inputs(argv);
+    expect(run.config.config.providerParameters).toEqual({ service_tier: tier, seed: 42 });
+    if (argv.includes("--service-tier")) expect(run.reproduceCommand).toContain(`--service-tier ${tier}`);
+  });
+
+  it.each(["default", "flex", "priority", "fast", "ultrafast"])(
+    "sets and records the OpenRouter service tier %s",
+    (tier) => {
+      const run = inputs([...OPENROUTER, "--service-tier", tier]);
+      expect(run.config.config.providerParameters.service_tier).toBe(tier);
+      expect(run.reproduceCommand).toContain(`--service-tier ${tier}`);
+    },
+  );
+
   it.each([
     [`--config ${CONFIG} --quant Q8_0 --temp 1`, "--quant, --temp cannot be combined with --config"],
     [`${LOCAL.join(" ")} --temp abc`, "--temp must be a non-negative number"],

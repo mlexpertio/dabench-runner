@@ -4,6 +4,7 @@ import { shellQuote } from "../engine/format";
 import { errorMessage, isRecord } from "../engine/guards";
 import { Harness, knownHarness } from "../engine/harness";
 import { RunConfigSchema, type RunConfig } from "../engine/runconfig";
+import { parseServiceTier } from "../engine/service-tier";
 import { CaseSubset } from "../engine/subset";
 import type { Suite } from "../engine/suite";
 import {
@@ -37,11 +38,12 @@ enum RunFlag {
   Fresh = "fresh",
   Out = "out",
   Endpoint = "endpoint",
+  ServiceTier = "service-tier",
 }
 
 const RUN_FLAGS_SOURCE = "run flags";
 const REPRODUCED_SWITCHES: readonly string[] = [RunFlag.NativeJson];
-const CONFIG_RUN_FLAGS = [RunFlag.Config, RunFlag.Model, RunFlag.Name, RunFlag.Subset];
+const CONFIG_RUN_FLAGS = [RunFlag.Config, RunFlag.Model, RunFlag.Name, RunFlag.Subset, RunFlag.ServiceTier];
 const PROVIDER_RUN_FLAGS = [
   RunFlag.Provider,
   RunFlag.Model,
@@ -54,6 +56,7 @@ const PROVIDER_RUN_FLAGS = [
   RunFlag.ParamsFile,
   RunFlag.NativeJson,
   RunFlag.Subset,
+  RunFlag.ServiceTier,
 ];
 const SCOPE_FLAGS = [RunFlag.Category, RunFlag.Fresh, RunFlag.Out, RunFlag.Endpoint];
 
@@ -82,6 +85,16 @@ interface RecordedScope {
 export function resolveRunInputs(flags: Flags, command: string): RunInputs {
   const resolved = RunFlag.Config in flags ? configRun(flags, command) : providerRun(flags, command);
   const onOpenRouter = isOpenRouterRun(resolved.config);
+  const serviceTier = RunFlag.ServiceTier in flags ? requireFlag(flags, RunFlag.ServiceTier) : undefined;
+  if (serviceTier !== undefined && !onOpenRouter) fail(`--${RunFlag.ServiceTier} requires an OpenRouter run.`);
+  if (onOpenRouter) {
+    const parameters = resolved.config.config.providerParameters;
+    try {
+      parameters.service_tier = parseServiceTier(serviceTier ?? parameters.service_tier);
+    } catch (err) {
+      fail(`--${RunFlag.ServiceTier}: ${errorMessage(err)}`);
+    }
+  }
   const endpoint = stringFlag(flags, RunFlag.Endpoint);
   if (endpoint && !onOpenRouter)
     fail(`--${RunFlag.Endpoint} pins an OpenRouter endpoint, so it needs --${RunFlag.Provider} openrouter.`);

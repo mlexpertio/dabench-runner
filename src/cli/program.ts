@@ -1,4 +1,5 @@
 import { ENGINE_VERSION } from "../engine/schema";
+import { ServiceTier } from "../engine/service-tier";
 import { CliError, fail, flagList, parseArgs, unknownFlags } from "./args";
 import { cmdExport, ExportFlag, ExportFormat } from "./export";
 import { cmdInit, InitFlag } from "./init";
@@ -108,6 +109,7 @@ ${indent}[--model <id>] [--name <label>]
 ${indent}[--quant <label>] [--ctx <tokens>] [--temp <temperature>]
 ${indent}[--category <slug[,slug...]> | --subset quant-impact]
 ${indent}[--endpoint <provider|tag>]
+${indent}[--service-tier <${Object.values(ServiceTier).join("|")}>]
 ${indent}[--params <json> | --params-file <json>] [--out <artifact.json>]
 ${indent}[--fresh] [--native-json]
 
@@ -122,6 +124,16 @@ ${notes.scope}
 OpenRouter runs pin one serving endpoint with fallbacks off. The CLI picks the
 highest disclosed precision that supports tool calls, cheapest first. Use
 --endpoint to pick one yourself, by provider (deepinfra) or tag (deepinfra/fp8).
+--service-tier selects OpenRouter capacity (default: ${ServiceTier.Default}):
+  default    standard capacity and pricing
+  flex       lower cost, higher latency and lower availability
+  priority   faster capacity at a higher price
+  fast       alias for priority
+  ultrafast  lowest latency on supported models, at a higher price
+The flag overrides service_tier in --params, --params-file or --config.
+The CLI pins one endpoint from the selected tier and uses its pricing.
+If absent, flex and priority use default; ultrafast tries priority, then default.
+An exact --endpoint tag must be compatible with the selected service tier.
 
 ${notes.storage}
 

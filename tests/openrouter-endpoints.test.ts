@@ -52,6 +52,109 @@ describe("fetchEndpoints", () => {
 });
 
 describe("pickEndpoint", () => {
+  it("reports when only non-default endpoints exist without opting into them", async () => {
+    const endpoints = await served(raw("openai/fast", "bf16", "0.000004", "0.000016"));
+    expect(() => pickEndpoint(endpoints)).toThrow(
+      'no endpoint supports service tier "default". Available: openai/fast',
+    );
+  });
+
+  it("rejects an exact tier endpoint that conflicts with the requested default tier", async () => {
+    const endpoints = await served(raw("openai/flex", "bf16", "0.000001", "0.000004"));
+    expect(() => pickEndpoint(endpoints, "openai/flex", "default")).toThrow(
+      /no endpoint matches.*service tier "default"/,
+    );
+  });
+
+  it.each([
+    ["openai/fast", "openai/priority"],
+    ["openai/priority", "openai/fast"],
+  ])("matches the priority endpoint alias %s to %s", async (requested, tag) => {
+    const endpoints = await served(raw(tag, "bf16", "0.000004", "0.000016"));
+    expect(pickEndpoint(endpoints, requested, "priority").tag).toBe(tag);
+  });
+
+  it.each([
+    ["priority", ["openai", "openai/flex", "openai/ultrafast"], "openai"],
+    ["fast", ["openai", "openai/flex"], "openai"],
+    ["ultrafast", ["openai", "openai/priority", "openai/flex"], "openai/priority"],
+    ["ultrafast", ["openai", "openai/flex"], "openai"],
+  ])("uses the next available tier for %s among %j", async (tier, tags, expected) => {
+    const endpoints = await served(...tags.map((tag) => raw(tag, "bf16", "0.000002", "0.000008")));
+    expect(pickEndpoint(endpoints, undefined, tier).tag).toBe(expected);
+  });
+
+  it("keeps a provider restriction when its priority tier is unavailable", async () => {
+    const endpoints = await served(
+      raw("openai", "bf16", "0.000002", "0.000008"),
+      raw("google-vertex/priority", "bf16", "0.000004", "0.000016"),
+    );
+    expect(pickEndpoint(endpoints, "openai", "priority").tag).toBe("openai");
+  });
+
+  it.each([
+    ["default", "openai"],
+    ["flex", "openai/flex"],
+    ["priority", "openai/fast"],
+    ["fast", "openai/fast"],
+    ["ultrafast", "openai/ultrafast"],
+  ])("pins %s capacity before considering precision or price", async (tier, tag) => {
+    const endpoints = await served(
+      raw("openai", "bf16", "0.000002", "0.000008"),
+      raw("openai/flex", "unknown", "0.000001", "0.000004"),
+      raw("openai/fast", "unknown", "0.000004", "0.000016"),
+      raw("openai/ultrafast", "fp32", "0.000008", "0.000032"),
+    );
+    expect(pickEndpoint(endpoints, undefined, tier).tag).toBe(tag);
+  });
+
+  it("pins a flex endpoint when flex is requested, even when standard has higher precision", async () => {
+    const endpoints = await served(
+      raw("openai", "bf16", "0.000002", "0.000008"),
+      raw("google-vertex/flex", "unknown", "0.000001", "0.000004"),
+    );
+    expect(pickEndpoint(endpoints, undefined, "flex").tag).toBe("google-vertex/flex");
+  });
+
+  it.each([undefined, "default"])("does not opt into flex when service_tier is %s", async (tier) => {
+    const endpoints = await served(
+      raw("openai", "unknown", "0.000002", "0.000008"),
+      raw("openai/flex", "unknown", "0.000001", "0.000004"),
+    );
+    expect(pickEndpoint(endpoints, undefined, tier).tag).toBe("openai");
+  });
+
+  it("honors a provider restriction within the flex endpoints", async () => {
+    const endpoints = await served(
+      raw("openai", "bf16", "0.000002", "0.000008"),
+      raw("openai/flex", "unknown", "0.000001", "0.000004"),
+      raw("google-vertex/flex", "bf16", "0.0000005", "0.000002"),
+    );
+    expect(pickEndpoint(endpoints, "OpenAI", "flex").tag).toBe("openai/flex");
+    expect(pickEndpoint(endpoints, "openai/flex", "flex").tag).toBe("openai/flex");
+  });
+
+  it("rejects a standard-only provider restriction when flex endpoints exist", async () => {
+    const endpoints = await served(
+      raw("openai", "bf16", "0.000002", "0.000008"),
+      raw("google-vertex/flex", "unknown", "0.000001", "0.000004"),
+    );
+    expect(() => pickEndpoint(endpoints, "openai", "flex")).toThrow(/no endpoint matches.*openai.*google-vertex\/flex/);
+  });
+
+  it("uses standard capacity when the model has no flex endpoints, matching OpenRouter", async () => {
+    const endpoints = await served(raw("openai", "bf16", "0.000002", "0.000008"));
+    expect(pickEndpoint(endpoints, undefined, "flex").tag).toBe("openai");
+  });
+
+  it("allows an explicit flex endpoint without a service_tier parameter", async () => {
+    const endpoints = await served(
+      raw("openai", "bf16", "0.000002", "0.000008"),
+      raw("openai/flex", "unknown", "0.000001", "0.000004"),
+    );
+    expect(pickEndpoint(endpoints, "openai/flex").tag).toBe("openai/flex");
+  });
+
   it("pins the highest disclosed precision that can call tools, cheapest first", async () => {
     const endpoints = await served(
       raw("dekallm", "unknown", "0.00000004", "0.00000049"),
