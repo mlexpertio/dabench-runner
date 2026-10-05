@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generationParameters } from "dabench/engine/generation";
+import { withSuiteBudgets } from "../src/engine/generation";
 
 const BALANCED = {
   reasoningTokens: 2048,
@@ -50,6 +50,6 @@ describe("category generation provider mapping", () => {
       { max_completion_tokens: 8192, reasoning_effort: "high" },
     ],
   ])("uses %s", (_, harness, parameters, generation, expected) => {
-    expect(generationParameters(harness, parameters, generation)).toEqual(expected);
+    expect(withSuiteBudgets(harness, parameters, generation)).toEqual(expected);
   });
 });

@@ -4,7 +4,6 @@ import { Harness, knownHarness } from "./harness";
 import { endpointRoots, fetchJson, parsePricing, type ProviderEndpoint } from "./provider-http";
 import { Sha256HexSchema } from "./schema";
 
-const MAX_METADATA_ARRAY_LENGTH = 48;
 const MAX_NESTED_SEARCH_DEPTH = 8;
 const TRAILING_SLASHES = /\/+$/;
 
@@ -16,7 +15,7 @@ export interface DiscoveredModel {
   maxCompletionTokens?: number;
   pricing?: ApiPricing;
   weightsHash?: string;
-  metadata: Record<string, JsonValue>;
+  metadata?: Record<string, JsonValue>;
 }
 
 interface ProviderDiscovery {
@@ -27,43 +26,37 @@ interface ProviderDiscovery {
 type Entry = JsonObject;
 type IdentifiedEntry = Entry & { id: string };
 
-const DISCOVERERS = {
+type Discoverer = (endpoint: ProviderEndpoint) => Promise<ProviderDiscovery>;
+
+const DISCOVERERS: Partial<Record<Harness, Discoverer>> = {
   [Harness.Ollama]: discoverOllama,
   [Harness.LlamaCpp]: discoverLlamaCpp,
   [Harness.Vllm]: discoverVllm,
   [Harness.OpenRouter]: discoverOpenRouter,
-} satisfies Partial<Record<Harness, (endpoint: ProviderEndpoint) => Promise<ProviderDiscovery>>>;
+};
 
-type DiscoverableHarness = keyof typeof DISCOVERERS;
-
-function supportsDiscovery(harness: Harness): harness is DiscoverableHarness {
-  return harness in DISCOVERERS;
-}
-
-export function discoverProviderModels(
-  request: ProviderEndpoint & { harness: DiscoverableHarness },
-): Promise<ProviderDiscovery>;
-export function discoverProviderModels(
-  request: ProviderEndpoint & { harness: string },
-): Promise<ProviderDiscovery> | null;
 export function discoverProviderModels({
   harness,
   ...endpoint
-}: ProviderEndpoint & { harness: string }): Promise<ProviderDiscovery> | null {
+}: ProviderEndpoint & { harness: string }): Promise<ProviderDiscovery> {
   const known = knownHarness(harness);
-  return known && supportsDiscovery(known) ? DISCOVERERS[known](endpoint) : null;
+  const discover = (known && DISCOVERERS[known]) || listModels;
+  return discover(endpoint);
 }
 
-/** The models on a bare OpenAI-style /models list, read for ids, context and price only, so each name is left blank. */
-export async function listModels(endpoint: ProviderEndpoint): Promise<DiscoveredModel[]> {
+async function listModels(endpoint: ProviderEndpoint): Promise<ProviderDiscovery> {
   const url = `${endpoint.baseUrl.replace(TRAILING_SLASHES, "")}/models`;
-  return dataList(await requiredJson(url, endpoint)).map((raw) => ({
-    id: raw.id,
-    name: "",
-    contextWindow: positiveNumber(raw.context_length),
-    pricing: parsePricing(raw.pricing),
-    metadata: {},
-  }));
+  const listed = dataList(await requiredJson(url, endpoint));
+  const requested = endpoint.modelId;
+  return {
+    models: (requested ? listed.filter((raw) => raw.id === requested) : listed).map((raw) => ({
+      id: raw.id,
+      name: "",
+      contextWindow: positiveNumber(raw.context_length),
+      pricing: parsePricing(raw.pricing),
+    })),
+    warnings: [],
+  };
 }
 
 async function discoverOpenRouter(endpoint: ProviderEndpoint): Promise<ProviderDiscovery> {
@@ -131,11 +124,6 @@ async function describeOllamaModel(
     quantization: textValue(details?.quantization_level),
     contextWindow: modelInfoContext(modelInfo) ?? positiveNumber(recordValue(runningEntry)?.context_length),
     weightsHash: ollamaWeightsHash(tag.digest),
-    metadata: sentRecords({
-      tags: tag,
-      show: show === undefined ? undefined : pruneLargeArrays(show),
-      running: runningEntry,
-    }),
   };
 }
 
@@ -173,7 +161,6 @@ async function discoverLlamaCpp(endpoint: ProviderEndpoint): Promise<ProviderDis
         quantization: textValue(propsRecord?.quantization) ?? inferQuantization(modelPath) ?? inferQuantization(raw.id),
         contextWindow:
           positiveNumber(params?.n_ctx) ?? positiveNumber(defaults?.n_ctx) ?? positiveNumber(raw.context_length),
-        metadata: sentRecords({ models: raw, props }),
       };
     }),
   );
@@ -183,10 +170,9 @@ async function discoverLlamaCpp(endpoint: ProviderEndpoint): Promise<ProviderDis
 async function discoverVllm(endpoint: ProviderEndpoint): Promise<ProviderDiscovery> {
   const { root, v1 } = endpointRoots(endpoint.baseUrl);
   const warnings: string[] = [];
-  const [payload, serverInfo, version] = await Promise.all([
+  const [payload, serverInfo] = await Promise.all([
     requiredJson(`${v1}/models`, endpoint),
     optionalJson(`${root}/server_info?config_format=json`, endpoint, warnings),
-    optionalJson(`${root}/version`, endpoint, warnings),
   ]);
   const entries = dataList(payload);
   const requested = endpoint.modelId;
@@ -205,7 +191,6 @@ async function discoverVllm(endpoint: ProviderEndpoint): Promise<ProviderDiscove
         contextWindow:
           positiveNumber(raw.max_model_len) ??
           findNested(serverInfo, ["max_model_len", "max_seq_len", "max_position_embeddings"], positiveNumber),
-        metadata: sentRecords({ models: raw, serverInfo, version }),
       } satisfies DiscoveredModel;
     }),
     warnings,
@@ -285,25 +270,6 @@ function ggufModelName(id: string): string {
   if (!/\.gguf$/i.test(id)) return id;
   const base = id.split(/[\\/]/).pop() ?? id;
   return base.replace(/(?:-\d{5}-of-\d{5})?\.gguf$/i, "");
-}
-
-function pruneLargeArrays(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) {
-    return value.length > MAX_METADATA_ARRAY_LENGTH
-      ? { elided: true, length: value.length }
-      : value.map((item) => pruneLargeArrays(item));
-  }
-  if (isJsonObject(value)) {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, pruneLargeArrays(entry)]));
-  }
-  return value;
-}
-
-/** The provider's records, leaving out the ones it didn't send. */
-function sentRecords(records: Record<string, JsonValue | undefined>): Record<string, JsonValue> {
-  return Object.fromEntries(
-    Object.entries(records).filter((record): record is [string, JsonValue] => record[1] !== undefined),
-  );
 }
 
 function findNested<T>(

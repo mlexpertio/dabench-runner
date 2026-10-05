@@ -6,13 +6,12 @@ export type MessageContentPart = { type: "text"; text: string } | { type: "image
 export interface ToolCall {
   id?: string;
   name: string;
-  args?: Record<string, unknown>;
+  args?: JsonObject;
   argsText?: string;
 }
 
 export type IssuedToolCall = ToolCall & { id: string };
 
-/** The arguments as the model sent them, whether or not they parsed. */
 export function callArguments(call: ToolCall): string {
   return call.argsText ?? JSON.stringify(call.args ?? {});
 }
@@ -52,14 +51,8 @@ export function estimatePromptTokens(messages: ChatMessage[]): number {
   return estimateTokens(messages.map(messageText).join("\n"));
 }
 
-/** The reply's output tokens as the provider reported them, else estimated from its text and reasoning. */
 export function completionTokensOf(result: StreamResult): number {
   return result.usage?.completionTokens ?? estimateTokens(result.text) + estimateTokens(result.reasoningText ?? "");
-}
-
-interface JsonSchemaResponseFormat {
-  name: string;
-  schema: Record<string, unknown>;
 }
 
 export interface CompletionRequest {
@@ -67,7 +60,6 @@ export interface CompletionRequest {
   messages: ChatMessage[];
   temperature?: number;
   maxTokens?: number;
-  responseFormat?: JsonSchemaResponseFormat;
   tools?: ToolParam[];
   providerParameters?: Record<string, unknown>;
 }
@@ -79,11 +71,9 @@ export interface CompletionUsage {
 }
 
 export interface StreamHandlers {
-  /** Called as each try of the request starts, so a retried request can be timed from its last try. */
   onAttempt?: () => void;
   onDelta?: (delta: string) => void;
   onReasoningDelta?: (delta: string) => void;
-  /** Called for each streamed fragment of a tool call. */
   onToolCallDelta?: () => void;
   signal?: AbortSignal;
 }
@@ -95,7 +85,6 @@ export interface StreamResult {
   aborted: boolean;
   toolCalls?: ToolCall[];
   reasoningText?: string;
-  /** The provider's own reasoning blocks (OpenRouter `reasoning_details`), to send back unchanged. */
   reasoningDetails?: JsonObject[];
   model?: string;
 }

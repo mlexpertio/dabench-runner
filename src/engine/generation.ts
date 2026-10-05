@@ -19,8 +19,7 @@ function withoutReasoningControls(parameters: ProviderParameters): ProviderParam
   return next;
 }
 
-/** Suite budgets override run parameters so a benchmark cannot silently change its budget. */
-export function generationParameters(
+export function withSuiteBudgets(
   harness: string,
   parameters: ProviderParameters | undefined,
   generation: CategoryGeneration,
@@ -46,8 +45,6 @@ export function generationParameters(
       next.reasoning = { ...reasoning, max_tokens: generation.reasoningTokens };
       break;
     }
-    case Harness.OpenAI:
-    case Harness.Ollama:
     default:
       next.reasoning_effort = generation.reasoningEffort;
   }

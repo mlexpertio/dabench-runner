@@ -1,10 +1,20 @@
 import { quantBits, type ApiPricing } from "./calc";
 import { errorMessage, isJsonObject, isRecord, type JsonValue } from "./guards";
 import { endpointRoots, fetchJson, parsePricing, type ProviderEndpoint } from "./provider-http";
-import { parseServiceTier, ServiceTier } from "./service-tier";
+
+export enum ServiceTier {
+  Default = "default",
+  Flex = "flex",
+  Priority = "priority",
+  Fast = "fast",
+  Ultrafast = "ultrafast",
+}
+
+type ServedTier = Exclude<ServiceTier, ServiceTier.Fast>;
 
 export interface ServingEndpoint {
   tag: string;
+  tier: ServedTier;
   providerName: string;
   precision: string | null;
   contextWindow: number | null;
@@ -18,13 +28,19 @@ const TOOLS_PARAMETER = "tools";
 const HEALTHY_STATUS = 0;
 const UNKNOWN_PRECISION_BITS = 0;
 const TAG_SEPARATOR = "/";
-const TIER_PREFERENCE: Record<ServiceTier, readonly ServiceTier[]> = {
+const TIER_PREFERENCE: Record<ServedTier, readonly ServedTier[]> = {
   [ServiceTier.Default]: [ServiceTier.Default],
   [ServiceTier.Flex]: [ServiceTier.Flex, ServiceTier.Default],
   [ServiceTier.Priority]: [ServiceTier.Priority, ServiceTier.Default],
-  [ServiceTier.Fast]: [ServiceTier.Priority, ServiceTier.Default],
   [ServiceTier.Ultrafast]: [ServiceTier.Ultrafast, ServiceTier.Priority, ServiceTier.Default],
 };
+
+export function parseServiceTier(value: unknown = ServiceTier.Default): ServiceTier {
+  const tier = Object.values(ServiceTier).find((known) => known === value);
+  if (!tier)
+    throw new Error(`unknown service tier ${JSON.stringify(value)}. One of: ${Object.values(ServiceTier).join(", ")}`);
+  return tier;
+}
 
 export async function fetchEndpoints(endpoint: ProviderEndpoint & { modelId: string }): Promise<ServingEndpoint[]> {
   const url = `${endpointRoots(endpoint.baseUrl).v1}/models/${endpoint.modelId}/endpoints`;
@@ -45,6 +61,7 @@ function parseEndpoints(payload: unknown): ServingEndpoint[] {
     return [
       {
         tag: raw.tag,
+        tier: tagTier(raw.tag) ?? ServiceTier.Default,
         providerName: raw.provider_name,
         precision: precision === UNDISCLOSED_PRECISION ? null : precision,
         contextWindow: typeof raw.context_length === "number" ? raw.context_length : null,
@@ -56,27 +73,17 @@ function parseEndpoints(payload: unknown): ServingEndpoint[] {
   });
 }
 
-/**
- * The endpoint a board run pins: the highest disclosed precision among those
- * that can call tools, healthy before degraded, cheapest first. An operator
- * can narrow the choice to one provider or one exact tag.
- */
-export function pickEndpoint(
-  endpoints: ServingEndpoint[],
-  requested?: string,
-  serviceTier?: JsonValue,
-): ServingEndpoint {
+export function pickEndpoint(endpoints: ServingEndpoint[], tier: ServiceTier, requested?: string): ServingEndpoint {
   if (endpoints.length === 0) throw new Error("OpenRouter lists no endpoints for this model");
-  const tier = serviceTier === undefined ? tierFromTag(requested ?? "") : parseServiceTier(serviceTier);
+  const wanted = servedTier(tier);
   const tiers =
-    tier === ServiceTier.Flex && endpoints.some((endpoint) => tierFromTag(endpoint.tag) === ServiceTier.Flex)
+    wanted === ServiceTier.Flex && endpoints.some((endpoint) => endpoint.tier === ServiceTier.Flex)
       ? [ServiceTier.Flex]
-      : TIER_PREFERENCE[tier];
-  const eligible = endpoints.filter((endpoint) => tiers.includes(tierFromTag(endpoint.tag)));
-  const ranked = [...eligible].sort(byPreference);
-  const asked = requested ? ranked.filter((e) => matches(e, requested)) : ranked;
+      : TIER_PREFERENCE[wanted];
+  const ranked = endpoints.filter((endpoint) => tiers.includes(endpoint.tier)).sort(byPreference);
+  const asked = requested ? ranked.filter((endpoint) => matches(endpoint, requested)) : ranked;
   for (const preferred of tiers) {
-    const group = asked.filter((endpoint) => tierFromTag(endpoint.tag) === preferred);
+    const group = asked.filter((endpoint) => endpoint.tier === preferred);
     const selected = group.find((endpoint) => endpoint.supportsTools) ?? group[0];
     if (selected) return selected;
   }
@@ -84,13 +91,13 @@ export function pickEndpoint(
   throw new Error(`no endpoint ${target}. Available: ${endpoints.map((endpoint) => endpoint.tag).join(", ")}`);
 }
 
-function tierFromTag(tag: string): ServiceTier {
-  const tier = Object.values(ServiceTier).find((known) => tag.toLowerCase().endsWith(`${TAG_SEPARATOR}${known}`));
-  return normalizeTier(tier ?? ServiceTier.Default);
+function servedTier(tier: ServiceTier): ServedTier {
+  return tier === ServiceTier.Fast ? ServiceTier.Priority : tier;
 }
 
-function normalizeTier(tier: ServiceTier): ServiceTier {
-  return tier === ServiceTier.Fast ? ServiceTier.Priority : tier;
+function tagTier(tag: string): ServedTier | null {
+  const tier = Object.values(ServiceTier).find((known) => tag.toLowerCase().endsWith(`${TAG_SEPARATOR}${known}`));
+  return tier ? servedTier(tier) : null;
 }
 
 export function pinnedParameters(
@@ -101,7 +108,6 @@ export function pinnedParameters(
   return { ...parameters, provider: { ...routing, order: [endpoint.tag], allow_fallbacks: false } };
 }
 
-/** The endpoint tag a run was pinned to, or null when OpenRouter was free to route it. */
 export function pinnedTag(parameters: Record<string, JsonValue>): string | null {
   const routing = parameters.provider;
   if (!isRecord(routing) || routing.allow_fallbacks !== false || !Array.isArray(routing.order)) return null;
@@ -134,7 +140,7 @@ function matches(endpoint: ServingEndpoint, requested: string): boolean {
 }
 
 function normalizedTag(tag: string): string {
-  const parts = tag.toLowerCase().split(TAG_SEPARATOR);
-  if (parts.length > 1 && parts.at(-1) === ServiceTier.Fast) parts[parts.length - 1] = ServiceTier.Priority;
-  return parts.join(TAG_SEPARATOR);
+  const lower = tag.toLowerCase();
+  const tier = tagTier(lower);
+  return tier ? `${lower.slice(0, lower.lastIndexOf(TAG_SEPARATOR))}${TAG_SEPARATOR}${tier}` : lower;
 }

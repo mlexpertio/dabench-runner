@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { errorMessage } from "../engine/guards";
+import { SuiteSchema, type Suite } from "../engine/suite";
 
 export type Flags = Record<string, string | boolean>;
 
@@ -56,6 +57,15 @@ export function numberFlag(flags: Flags, name: string): number | undefined {
   return number;
 }
 
+export function enumFlag<T extends string>(flags: Flags, name: string, values: Record<string, T>): T | undefined {
+  const requested = stringFlag(flags, name);
+  if (requested === undefined) return undefined;
+  const known = Object.values(values);
+  const value = known.find((candidate) => candidate === requested);
+  if (!value) fail(`unknown --${name} "${requested}". One of: ${known.join(", ")}`);
+  return value;
+}
+
 export function booleanFlag(flags: Flags, name: string): boolean {
   const value = flags[name];
   if (typeof value === "string") fail(`--${name} takes no value`);
@@ -76,7 +86,10 @@ export function parseInput<T extends z.ZodType>(schema: T, value: unknown, sourc
   return parsed.data;
 }
 
-/** A mistake in how the CLI was invoked or configured, reported as one line without a stack trace. */
+export function loadSuite(path: string): Suite {
+  return parseInput(SuiteSchema, readJsonFile(path, `${path} is not a JSON suite`), path);
+}
+
 export class CliError extends Error {}
 
 export function fail(message: string): never {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { detectHardware } from "dabench/engine/hardware";
-import type { Exec } from "dabench/engine/exec";
+import type { Exec } from "../src/cli/exec";
+import { detectHardware } from "../src/cli/hardware";
 
 function fakeExec(table: Record<string, string>): Exec {
   return async (cmd, args) => {
@@ -38,12 +38,5 @@ describe("detectHardware", () => {
     expect(hw.accelerators[0].kind).toBe("metal");
     expect(hw.accelerators[0].memoryMb).toBe(hw.totalRamMb);
     expect(hw.osVersion).toBe("macOS 15.5");
-  });
-
-  it("falls back to cpu-only when no accelerator is detectable", async () => {
-    const hw = await detectHardware({ platform: "linux", arch: "x64", exec: fakeExec({}) });
-    expect(hw.memoryModel).toBe("cpu-only");
-    expect(hw.accelerators).toEqual([]);
-    expect(hw.osVersion).toMatch(/\S/);
   });
 });

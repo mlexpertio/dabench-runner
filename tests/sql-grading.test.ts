@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { grade } from "dabench/engine/grader";
-import { TestCaseSchema, type TestCase } from "dabench/engine/suite";
+import { grade } from "../src/engine/grader";
+import { TestCaseSchema, type TestCase } from "../src/engine/suite";
 
 const SCHEMA = "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, total_cents INTEGER NOT NULL);";
 const SEED = "INSERT INTO orders VALUES (1, 'ana', 1200), (2, 'ben', 800), (3, 'ana', 500);";

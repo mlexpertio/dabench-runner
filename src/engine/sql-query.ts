@@ -8,13 +8,8 @@ const SANDBOX_SCRIPT = fileURLToPath(new URL("./sql-sandbox.mjs", import.meta.ur
 
 type QueryRun = { ok: true; rows: unknown[][] } | { ok: false; error: string };
 
-/** Runs one read-only query on a fresh in-memory database, in a separate process that is killed on timeout. */
 export async function runSqlQuery(database: { schema: string; seed: string }, query: string): Promise<QueryRun> {
-  const sandbox = Sandbox.fork({
-    script: SANDBOX_SCRIPT,
-    serialization: "advanced",
-    exitMessage: ({ code }) => `the SQL sandbox exited with code ${code}`,
-  });
+  const sandbox = Sandbox.fork({ script: SANDBOX_SCRIPT, label: "SQL sandbox", serialization: "advanced" });
   try {
     return await sandbox.request<QueryRun>(
       { ...database, query },

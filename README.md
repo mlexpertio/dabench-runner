@@ -1,6 +1,6 @@
 # DaBench runner
 
-DaBench runner benchmarks an LLM on a suite of test cases and grades every answer with code, not with a judge model. It checks exact answers, JSON against a schema, tool-call sequences, unit tests, SQL query results and rubric patterns. It works with any OpenAI-compatible endpoint: OpenRouter, OpenAI, Ollama, vLLM and llama.cpp.
+DaBench runner benchmarks an LLM on a suite of test cases and grades every answer with code, not with a judge model. It checks exact answers, JSON values, tool calls, simulated tool state, unit tests, SQL query results and text rules. It works with any OpenAI-compatible endpoint: OpenRouter, OpenAI, Ollama, vLLM and llama.cpp.
 
 It needs Node.js 24.10 or newer.
 
@@ -12,7 +12,7 @@ npx dabench validate --suite mybench/suite.json
 OPENROUTER_API_KEY=your-key npx dabench run --suite mybench/suite.json --provider openrouter --model qwen/qwen-2.5-7b-instruct
 ```
 
-`init` copies the public sample suite to `mybench/suite.json`. It has 14 cases, two from each of the seven DaBench categories.
+`init` copies the public sample suite to `mybench/suite.json`. It has 14 cases, two in each of seven task categories.
 
 `run` writes `artifacts/<run-id>.artifact.json` and updates it after each case. Pass `--out path/to/result.json` to choose the file. The CLI reads `OPENROUTER_API_KEY` or `OPENAI_API_KEY` from the environment, or from a `.env` or `.env.local` file in the current directory.
 
@@ -53,7 +53,7 @@ npx dabench export --artifact artifacts/<run-id>.artifact.json > cases.csv
 npx dabench export --artifact artifacts/<run-id>.artifact.json --format jsonl > cases.jsonl
 ```
 
-Each row is one case: run id, model, case id, category, grader, pass/fail, score, failed checks, finish reason, token counts, tokens per second, latency, tool calls, the response and the reasoning. CSV cells that hold lists are JSON-encoded. Export several runs and concatenate them to compare models.
+Each row is one case with these columns: `run_id`, `model`, `case_id`, `category`, `grader`, `passed`, `score`, `correctness`, `quality`, `failed_assertions`, `finish_reason`, `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `total_tokens`, `tokens_per_second`, `latency_ms`, `vram_mb`, `tool_calls`, `response` and `reasoning`. CSV cells that hold lists are JSON-encoded. Export several runs and concatenate them to compare models.
 
 ```python
 import pandas as pd
@@ -66,24 +66,31 @@ cases.groupby("category")["passed"].mean()
 
 A suite is one JSON file. It has an `id`, a `version`, the `categories` in display order, and the `cases`. Each case names its category, a difficulty tier from 1 to 3, a prompt (`user`, plus an optional `system`) and a `graderKind` with what that grader checks:
 
-| `graderKind` | Passes when the answer                                                                          |
-| ------------ | ----------------------------------------------------------------------------------------------- |
-| `exact`      | equals the expected text                                                                        |
-| `json-match` | is JSON equal to the expected value                                                             |
-| `schema`     | is JSON that validates against a JSON Schema                                                    |
-| `tooltrace`  | makes the expected tool calls, in order, with the expected arguments                            |
-| `tool-state` | reaches the expected simulated state within a call budget without invalid or forbidden actions  |
-| `unit-test`  | is JavaScript that passes the case's tests, run in a sandboxed Node.js process                  |
-| `rubric`     | passes every required text check, such as contains, does not contain, a regex or a length limit |
-| `sql`        | is a SQLite query that returns the expected rows from a seeded database                         |
+| `graderKind` | Passes when the answer                                                                         |
+| ------------ | ---------------------------------------------------------------------------------------------- |
+| `exact`      | equals the expected text                                                                       |
+| `json-match` | is JSON equal to the expected value                                                            |
+| `tooltrace`  | makes the expected tool calls, in order, with the expected arguments                           |
+| `tool-state` | reaches the expected simulated state within a call budget without invalid or forbidden actions |
+| `unit-test`  | is JavaScript that passes the case's tests, run in a sandboxed Node.js process                 |
+| `rubric`     | passes every required text check: `equals`, `contains`, `notContains` or `regex`               |
+| `sql`        | is a SQLite query that returns the expected rows from a seeded database                        |
 
 [`src/engine/suite.ts`](src/engine/suite.ts) defines every field. Edit the file `init` writes and run `validate` after each change. Any language can write the file, for example Python's `json.dump`. The CLI only reads suites as JSON and never runs them as code.
+
+`prompt.turns` lists scripted follow-up user messages. The runner sends each one after the model's previous reply and grades the last reply. Tool cases can't use turns.
+
+A `unit-test` case may set `unitTests.editFile`. The prompt then shows that file, and the answer must be SEARCH/REPLACE blocks that edit it.
+
+A `sql` case shows the model the DDL in `sql.schema`. The query runs read-only against that schema filled with `sql.seed`, which the model never sees.
+
+Any case may set `secret`, a test string planted in the prompt or in tool results. The case fails if the secret appears in a reply or in a tool call.
 
 A `tool-state` case declares tools and an `environment` with `initialState`, `actions`, `expectedState` and `maxCalls`. Each action has a tool name, exact arguments, a fixed result, optional `when` conditions and optional `set` updates. Conditions compare entire values at the named top-level state keys; updates replace those keys. Exactly one action must match a call and the current state. Unknown, ambiguous or over-budget actions return `action_not_available` and fail the case. Grading replays the calls and checks the terminal state, forbidden calls and final reply. The model sees tool interfaces and results, never the hidden state or action rules. State-based tasks allow at most 31 calls plus a final reply turn.
 
 A JSON conversation may set `jsonMatch.expectedTurns` to the expected replies before the final answer. Its length must equal `prompt.turns.length`; `jsonMatch.expected` still checks the final reply. Correctness is the mean of the per-reply correctness values, and format quality is the lowest per-reply quality. Cases without checkpoints retain final-answer grading.
 
-The sample ([`suites/sample.suite.json`](suites/sample.suite.json)) shows what each DaBench category tests. DaBench board scores come from a separate private suite.
+The sample ([`suites/sample.suite.json`](suites/sample.suite.json)) has two example cases per category. DaBench board scores come from a separate private suite.
 
 ## Development
 

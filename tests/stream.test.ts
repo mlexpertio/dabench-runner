@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OpenAICompletionClient } from "dabench/engine/openai-client";
+import { OpenAICompletionClient } from "../src/engine/openai-client";
 import { sseResponse } from "./scripted-client";
 
 interface Captured {

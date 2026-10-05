@@ -12,7 +12,7 @@ import {
   type ToolCall,
   type ToolParam,
 } from "./client";
-import { errorMessage, isRecord, type JsonObject } from "./guards";
+import { errorMessage, isJsonObject, isRecord, type JsonObject } from "./guards";
 
 export interface RetryOptions {
   retries: number;
@@ -22,7 +22,7 @@ export interface RetryOptions {
 }
 
 interface OpenAICompletionClientOptions {
-  apiKey: string;
+  apiKey?: string;
   baseUrl?: string;
   defaultHeaders?: Record<string, string>;
   fetchImpl?: typeof fetch;
@@ -33,20 +33,39 @@ interface OpenAICompletionClientOptions {
 const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504]);
 const RETRY_BACKOFF_FACTOR = 2;
 const STREAMED_DETAIL_TEXT_KEYS = new Set(["text", "summary", "data"]);
-export const NO_API_KEY = "no-key";
+const NO_API_KEY = "no-key";
 
 type AssistantMessage = Extract<ChatMessage, { role: "assistant" }>;
 type ChatParams = Omit<OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming, "stream" | "stream_options">;
+
+export function withRetry<T>(
+  attempt: () => Promise<T>,
+  retry: RetryOptions,
+  isRetryable: (error: unknown) => boolean,
+): Promise<T> {
+  return pRetry(attempt, {
+    retries: retry.retries,
+    factor: RETRY_BACKOFF_FACTOR,
+    minTimeout: retry.minTimeoutMs,
+    maxTimeout: retry.maxTimeoutMs,
+    randomize: true,
+    shouldRetry: ({ error }) => isRetryable(error),
+    onFailedAttempt: ({ error, retriesLeft, retryDelay }) => {
+      if (retriesLeft > 0 && isRetryable(error)) {
+        retry.onRetry({ retriesLeft, delayMs: retryDelay, status: errorStatus(error), message: errorMessage(error) });
+      }
+    },
+  });
+}
 
 export class OpenAICompletionClient implements CompletionClient {
   private readonly client: OpenAI;
   private readonly retry?: RetryOptions;
 
   constructor(opts: OpenAICompletionClientOptions) {
-    if (!opts.apiKey) throw new Error("OpenAICompletionClient requires an apiKey");
     this.retry = opts.retry;
     this.client = new OpenAI({
-      apiKey: opts.apiKey,
+      apiKey: opts.apiKey || NO_API_KEY,
       baseURL: opts.baseUrl?.replace(/\/+$/, ""),
       defaultHeaders: opts.defaultHeaders,
       fetch: opts.fetchImpl,
@@ -55,27 +74,8 @@ export class OpenAICompletionClient implements CompletionClient {
     });
   }
 
-  private withRetry<T>(fn: () => Promise<T>): Promise<T> {
-    const cfg = this.retry;
-    if (!cfg) return fn();
-    return pRetry(fn, {
-      retries: cfg.retries,
-      factor: RETRY_BACKOFF_FACTOR,
-      minTimeout: cfg.minTimeoutMs,
-      maxTimeout: cfg.maxTimeoutMs,
-      randomize: true,
-      shouldRetry: ({ error }) => isRetryable(error),
-      onFailedAttempt: ({ error, retriesLeft, retryDelay }) => {
-        if (retriesLeft > 0 && isRetryable(error)) {
-          cfg.onRetry({
-            retriesLeft,
-            delayMs: retryDelay,
-            status: errorStatus(error),
-            message: errorMessage(error),
-          });
-        }
-      },
-    });
+  private retried<T>(attempt: () => Promise<T>): Promise<T> {
+    return this.retry ? withRetry(attempt, this.retry, isRetryable) : attempt();
   }
 
   async stream(request: CompletionRequest, handlers?: StreamHandlers): Promise<StreamResult> {
@@ -89,14 +89,13 @@ export class OpenAICompletionClient implements CompletionClient {
     let abortThrown = false;
 
     try {
-      const completion = await this.withRetry(() => {
+      const completion = await this.retried(() => {
         handlers?.onAttempt?.();
         return this.client.chat.completions.create(
           {
             ...chatParams(request),
             stream: true,
             stream_options: { include_usage: true },
-            response_format: responseFormat(request),
           },
           { signal: handlers?.signal },
         );
@@ -160,22 +159,10 @@ function chatParams(request: CompletionRequest): ChatParams {
   };
 }
 
-function responseFormat(request: CompletionRequest): ChatParams["response_format"] {
-  if (!request.responseFormat) return undefined;
+function usageFrom(usage: OpenAI.Completions.CompletionUsage): CompletionUsage {
   return {
-    type: "json_schema",
-    json_schema: {
-      name: request.responseFormat.name,
-      strict: false,
-      schema: request.responseFormat.schema,
-    },
-  };
-}
-
-function usageFrom(usage: OpenAI.Completions.CompletionUsage | undefined): CompletionUsage {
-  return {
-    promptTokens: usage?.prompt_tokens ?? 0,
-    completionTokens: usage?.completion_tokens ?? 0,
+    promptTokens: usage.prompt_tokens ?? 0,
+    completionTokens: usage.completion_tokens ?? 0,
     reasoningTokens: reasoningTokensFrom(usage),
   };
 }
@@ -189,7 +176,7 @@ function toOpenAIMessage(m: ChatMessage): OpenAI.Chat.Completions.ChatCompletion
     case "tool":
       return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
     case "assistant":
-      return { ...toOpenAIAssistantMessage(m), ...replayedReasoning(m) };
+      return { ...toOpenAIAssistantMessage(m), ...reasoningUnderEveryServersField(m) };
   }
 }
 
@@ -199,11 +186,7 @@ function toOpenAIAssistantMessage(m: AssistantMessage): OpenAI.Chat.Completions.
     : { role: "assistant", content: m.content };
 }
 
-/**
- * OpenRouter takes its own `reasoning_details` back unchanged. For plain text, Ollama reads `reasoning`,
- * llama.cpp, SGLang and DeepSeek read `reasoning_content`, vLLM reads either, and each ignores the other.
- */
-function replayedReasoning({ reasoning, reasoningDetails }: AssistantMessage) {
+function reasoningUnderEveryServersField({ reasoning, reasoningDetails }: AssistantMessage) {
   if (reasoningDetails?.length) return { reasoning_details: reasoningDetails };
   return reasoning ? { reasoning, reasoning_content: reasoning } : {};
 }
@@ -230,7 +213,7 @@ function toOpenAITools(tools: ToolParam[]): OpenAI.Chat.Completions.ChatCompleti
 function normalizeToolCall(id: string | undefined, name: string, argsText: string): ToolCall {
   try {
     const parsed: unknown = argsText.trim() === "" ? {} : JSON.parse(argsText);
-    if (isRecord(parsed)) return { id, name, args: parsed };
+    if (isJsonObject(parsed)) return { id, name, args: parsed };
   } catch {}
   return { id, name, argsText };
 }
@@ -263,7 +246,6 @@ function reasoningDetailsText(details: unknown): string {
     .join("");
 }
 
-/** A streamed block arrives in fragments that share its `index`; their texts join and later fields win. */
 function mergeReasoningDetails(blocks: JsonObject[], delta: unknown): void {
   if (!isRecord(delta) || !Array.isArray(delta.reasoning_details)) return;
   for (const fragment of delta.reasoning_details.filter(isRecord) as JsonObject[]) {

@@ -16,7 +16,6 @@ function sortValue(value: unknown): unknown {
   );
 }
 
-/** The rows in the order of their canonical JSON, so the order they were made in doesn't matter. */
 export function sortedByCanonical<T>(rows: T[]): T[] {
   return rows
     .map((row) => ({ row, key: canonicalize(row) }))

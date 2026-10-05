@@ -1,7 +1,7 @@
 import os from "node:os";
-import { BYTES_PER_MB } from "./calc";
+import { BYTES_PER_MB } from "../engine/calc";
 import { defaultExec, outputLines, type Exec } from "./exec";
-import type { Accelerator, Hardware } from "./schema";
+import type { Accelerator, Hardware } from "../engine/schema";
 
 interface DetectHardwareOptions {
   exec?: Exec;

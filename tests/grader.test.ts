@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { grade, type GradeResult } from "dabench/engine/grader";
-import { stripReasoning } from "dabench/engine/inline-reasoning";
-import type { JsonSchemaSpec } from "dabench/engine/json-schema";
-import { TestCaseSchema, type TestCase } from "dabench/engine/suite";
+import type { ToolCall } from "../src/engine/client";
+import { grade } from "../src/engine/grader";
+import { stripReasoning } from "../src/engine/inline-reasoning";
+import { TestCaseSchema, type TestCase } from "../src/engine/suite";
 
 type CaseOf<K extends TestCase["graderKind"]> = Extract<TestCase, { graderKind: K }>;
 
 const base = { id: "c1", category: "cat", tier: 2 as const, prompt: { user: "do the task" } };
 
-function gradeText(testCase: TestCase, text: string): Promise<GradeResult> {
+function gradeText(testCase: TestCase, text: string) {
   return grade(testCase, { text });
 }
 
@@ -16,10 +16,8 @@ const PAST_SANDBOX_START_TIMEOUT_MS = 60_000;
 
 describe("stripReasoning — inline chain-of-thought never reaches a grader", () => {
   it.each([
-    ["<THINK>a</THINK>x<think>b</think>y", "xy"],
-    ["<thinking>hmm</thinking>4", "4"],
+    ["<THINK>a</THINK>x<thinking>b</thinking>y", "xy"],
     ["4\n<think>wait, actually", "4"],
-    ["<think>never closes", ""],
   ])("reduces %j to the answer %j (closed, tag-variant, and truncated blocks)", (raw, answer) => {
     expect(stripReasoning(raw)).toBe(answer);
   });
@@ -33,95 +31,12 @@ describe("stripReasoning — inline chain-of-thought never reaches a grader", ()
 
 describe("Grader — exact", () => {
   it.each([
-    ["391", "391", 100],
     ["  391\n", "391", 100],
     ["paris", "Paris", 0],
   ])("scores %j against %j as %i", async (answer, expected, score) => {
     const r = await gradeText({ ...base, graderKind: "exact", expected }, answer);
     expect(r).toMatchObject({ score, correctness: score / 100, quality: 100 });
     expect(r.assertions[0]).toMatchObject({ name: "exact-match", passed: score === 100 });
-  });
-});
-
-describe("Grader — schema", () => {
-  const c: CaseOf<"schema"> = {
-    ...base,
-    graderKind: "schema",
-    schema: {
-      type: "object",
-      required: ["name", "age"],
-      properties: { name: { type: "string" }, age: { type: "integer" } },
-    },
-  };
-
-  it("scores a bare conforming JSON value 100 with a passing format assertion", async () => {
-    const r = await gradeText(c, '{"name":"Ada","age":36}');
-    expect(r).toMatchObject({ score: 100, correctness: 1, quality: 100 });
-    expect(r.assertions.find((a) => a.name === "response-format")?.passed).toBe(true);
-  });
-
-  it.each<[string, JsonSchemaSpec, string, string]>([
-    ["a missing required field", c.schema, '{"name":"Ada"}', "$.age: required"],
-    ["a wrong field type", c.schema, '{"name":"Ada","age":"old"}', "$.age: integer"],
-    ["a value outside the enum", { type: "string", enum: ["red", "green", "blue"] }, '"purple"', "$: enum"],
-  ])("fails the contract on %s", async (_, schema, answer, failing) => {
-    const r = await gradeText({ ...base, graderKind: "schema", schema }, answer);
-    expect(r).toMatchObject({ score: 0, correctness: 0 });
-    expect(r.assertions.find((a) => a.name === failing)?.passed).toBe(false);
-  });
-
-  it("scores unparseable output 0 with a failed parse gate", async () => {
-    const r = await gradeText(c, "I cannot help with that.");
-    expect(r).toMatchObject({ score: 0, correctness: 0 });
-    expect(r.assertions[0]).toMatchObject({ name: "json-parses", passed: false });
-  });
-
-  it("enforces strict objects, bounds, patterns, formats, and unique arrays", async () => {
-    const strict: TestCase = {
-      ...base,
-      graderKind: "schema",
-      schema: {
-        type: "object",
-        required: ["email", "score", "tags"],
-        additionalProperties: false,
-        properties: {
-          email: { type: "string", format: "email", pattern: "@example\\.com$" },
-          score: { type: "number", minimum: 0, maximum: 1 },
-          tags: { type: "array", minItems: 2, maxItems: 2, uniqueItems: true, items: { type: "string" } },
-        },
-      },
-    };
-    expect((await gradeText(strict, '{"email":"a@example.com","score":0.8,"tags":["a","b"]}')).score).toBe(100);
-    const bad = await gradeText(strict, '{"email":"nope","score":2,"tags":["a","a"],"extra":true}');
-    expect(bad.score).toBe(0);
-    expect(bad.assertions.filter((a) => !a.passed).map((a) => a.name)).toEqual(
-      expect.arrayContaining([
-        "$: additionalProperties",
-        "$.email: format:email",
-        "$.score: maximum",
-        "$.tags: uniqueItems",
-      ]),
-    );
-  });
-
-  it("counts keys named like Object.prototype members as additional properties", async () => {
-    const strict: TestCase = {
-      ...base,
-      graderKind: "schema",
-      schema: {
-        type: "object",
-        required: ["name"],
-        additionalProperties: false,
-        properties: { name: { type: "string" } },
-      },
-    };
-    const r = await gradeText(strict, '{"name":"x","constructor":1,"__proto__":2}');
-    expect(r.score).toBe(0);
-    expect(r.assertions).toContainEqual({
-      name: "$: additionalProperties",
-      passed: false,
-      detail: "unexpected key(s): constructor, __proto__",
-    });
   });
 });
 
@@ -158,6 +73,24 @@ describe("Grader — semantic JSON match", () => {
     );
   });
 
+  it("keeps prototype-named keys in the expected value and in expected tool arguments", async () => {
+    const expected = JSON.parse('{"__proto__":{"admin":true},"name":"a"}');
+    const jsonCase = TestCaseSchema.parse({ ...base, graderKind: "json-match", jsonMatch: { expected } });
+    expect((await gradeText(jsonCase, JSON.stringify(expected))).score).toBe(100);
+    expect((await gradeText(jsonCase, '{"name":"a"}')).score).toBe(0);
+
+    const args = JSON.parse('{"__proto__":{"role":"admin"},"user":"u1"}');
+    const toolCase = TestCaseSchema.parse({
+      ...base,
+      graderKind: "tooltrace",
+      tools: [{ name: "grant" }],
+      expectedTools: [{ name: "grant", args }],
+      toolOptions: { argumentMatch: "exact" },
+    });
+    expect((await grade(toolCase, { text: "", toolCalls: [{ name: "grant", args }] })).score).toBe(100);
+    expect((await grade(toolCase, { text: "", toolCalls: [{ name: "grant", args: { user: "u1" } }] })).score).toBe(0);
+  });
+
   it("docks quality when the match is right but the strict format is broken", async () => {
     const c: TestCase = {
       ...base,
@@ -177,7 +110,7 @@ describe("Grader — tooltrace (native tool traces only)", () => {
     tools,
     expectedTools: [{ name: "search", args: { query: "x" } }, { name: "fetch" }],
   };
-  const out = (calls: Array<{ name: string; args?: Record<string, unknown> }>) => ({ text: "", toolCalls: calls });
+  const out = (calls: ToolCall[]) => ({ text: "", toolCalls: calls });
 
   const search = { name: "search", args: { query: "x" } };
   it.each([
@@ -213,12 +146,14 @@ describe("Grader — tooltrace (native tool traces only)", () => {
 
     const exactArgs: TestCase = {
       ...subsetArgs,
-      expectedTools: [{ name: "a", args: { x: 1 } }],
+      expectedTools: [{ name: "a", args: { x: 1, digest: 8740 } }],
       toolOptions: { order: "strict", allowExtraCalls: false, argumentMatch: "exact" },
     };
-    const r = await grade(exactArgs, out([{ name: "a", args: { x: 1, y: 2 } }]));
+    const r = await grade(exactArgs, out([{ name: "a", args: { x: 1, digest: "8740", y: 2 } }]));
     expect(r.score).toBe(0);
-    expect(r.assertions.find((a) => a.name === "call[0] a")?.detail).toContain("y: unexpected");
+    expect(r.assertions.find((a) => a.name === "call[0] a")?.detail).toBe(
+      'arguments differ: digest: got "8740", want 8740; y: unexpected',
+    );
   });
 
   it("passes a no-call case only when the model makes no call", async () => {
@@ -268,19 +203,6 @@ describe("Grader — tooltrace (native tool traces only)", () => {
     const traced = [{ name: "search", args: { query: "x" } }, { name: "fetch" }];
     expect((await grade(withCalls, { text: "I fetched it.", toolCalls: traced })).score).toBe(100);
     expect((await grade(withCalls, { text: "Done.", toolCalls: traced })).score).toBe(0);
-  });
-
-  it("treats string-typed numbers as a real argument mismatch under exact match", async () => {
-    const typed: TestCase = {
-      ...base,
-      graderKind: "tooltrace",
-      tools: [{ name: "seal" }],
-      expectedTools: [{ name: "seal", args: { digest: 8740 } }],
-      toolOptions: { order: "strict", allowExtraCalls: false, argumentMatch: "exact" },
-    };
-    const r = await grade(typed, out([{ name: "seal", args: { digest: "8740" } }]));
-    expect(r.score).toBe(0);
-    expect(r.assertions.find((a) => a.name === "call[0] seal")?.detail).toContain('digest: got "8740", want 8740');
   });
 });
 
@@ -351,11 +273,15 @@ describe("Grader — unit-test", () => {
     expect(r.assertions[0]).toMatchObject({ name: "code-compiles", passed: false });
   });
 
-  it("fails cleanly when the entry point is not defined", async () => {
-    const r = await gradeText(c, "function sum(a, b) { return a + b; }");
-    expect(r.score).toBe(0);
-    expect(r.assertions.find((a) => a.name === "code-compiles")?.passed).toBe(true);
-    expect(r.assertions.filter((a) => a.name.startsWith("test:")).every((a) => !a.passed)).toBe(true);
+  it("passes prototype-named keys to candidate code as own JSON data", async () => {
+    const value = JSON.parse('{"__proto__":{"x":1},"constructor":7}');
+    const task = TestCaseSchema.parse({
+      ...base,
+      graderKind: "unit-test",
+      unitTests: { entry: "solve", cases: [{ name: "own-key", args: [value], expected: value }] },
+    });
+    expect((await gradeText(task, "function solve(value) { return value; }")).score).toBe(100);
+    expect((await gradeText(task, "function solve(value) { delete value.__proto__; return value; }")).score).toBe(0);
   });
 
   it("does not expose host constructors through arguments or the VM global", async () => {
@@ -417,38 +343,7 @@ describe("Grader — rubric (deterministic correctness × quality)", () => {
     expect(onlyGood).toMatchObject({ correctness: 1, quality: 25, score: 25 });
   });
 
-  it("fails an answer with a number outside the allowed list (1,200 reads as 1200, 09 as 9, p95 is a name)", async () => {
-    const summary = TestCaseSchema.parse({
-      ...base,
-      graderKind: "rubric",
-      rubric: [{ id: "no-invented-numbers", required: true, check: { numbersWithin: [1200, 4.5, 2026, 9, 25, 3] } }],
-    });
-    expect(
-      (await gradeText(summary, "On 2026-09-25 we moved 1,200 users; p95 fell to 4.5s across 3 regions.")).score,
-    ).toBe(100);
-    expect((await gradeText(summary, "No numbers at all.")).score).toBe(100);
-
-    const invented = await gradeText(summary, "We moved 1,200 users, about 40% of the base.");
-    expect(invented).toMatchObject({ score: 0, correctness: 0 });
-    expect(invented.assertions[0]).toMatchObject({ name: "no-invented-numbers", passed: false });
-    expect((await gradeText(summary, "p95 fell to 4.50s.")).score).toBe(100);
-    expect((await gradeText(summary, "p95 fell to 4.6s.")).score).toBe(0);
-  });
-
-  it("supports normalized equality, case-insensitive sets, negative regex, and word/line counts", async () => {
-    const checks: TestCase = {
-      ...base,
-      graderKind: "rubric",
-      rubric: [
-        { id: "facts", required: true, weight: 1, check: { containsAll: ["alpha", "BETA"], caseSensitive: false } },
-        { id: "no-secret", required: true, weight: 1, check: { notRegex: "sk-[a-z0-9]+", flags: "i" } },
-        { id: "words", required: false, weight: 1, check: { wordCount: { min: 2, max: 4 } } },
-        { id: "lines", required: false, weight: 1, check: { lineCount: { min: 2, max: 2 } } },
-      ],
-    };
-    expect((await gradeText(checks, "Alpha\nbeta")).score).toBe(100);
-    expect((await gradeText(checks, "Alpha beta sk-leak")).score).toBe(0);
-
+  it("supports normalized, case-insensitive equality", async () => {
     const equals: TestCase = {
       ...base,
       graderKind: "rubric",

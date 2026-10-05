@@ -1,10 +1,8 @@
-import type { LocalAssumptions } from "../engine/calc";
+import { formatPerMillion, MB_PER_GB, passedCount, pluralize, shortHash } from "../engine/format";
 import type { ServingEndpoint } from "../engine/openrouter-endpoints";
 import type { DiscoveredModel } from "../engine/provider-discovery";
-import type { Artifact, Hardware, MemoryKind, ModelConfig } from "../engine/schema";
-import type { CaseSubset } from "../engine/subset";
+import type { Artifact, CaseSubset, Hardware, MemoryKind, ModelConfig } from "../engine/schema";
 import type { Suite } from "../engine/suite";
-import { formatPerMillion, MB_PER_GB, passedCount, pluralize, shortHash } from "../engine/format";
 
 const DEFAULT_BASE_URL_LABEL = "OpenAI default base URL";
 const MEMORY_KIND_LABELS: Record<MemoryKind, string> = {
@@ -15,8 +13,7 @@ const MEMORY_KIND_LABELS: Record<MemoryKind, string> = {
 
 interface LocalEndpoint {
   baseUrl: string | undefined;
-  hardware: Hardware;
-  cost: LocalAssumptions;
+  gpuHourlyUsd: number;
 }
 
 interface RunHeader {
@@ -28,6 +25,7 @@ interface RunHeader {
   discovered: DiscoveredModel | null;
   pinned: ServingEndpoint | null;
   local: LocalEndpoint | null;
+  hardware: Hardware | null;
   resumed: { runId: string; recorded: number; selected: number } | null;
 }
 
@@ -40,6 +38,7 @@ export function printRunHeader({
   discovered,
   pinned,
   local,
+  hardware,
   resumed,
 }: RunHeader): void {
   if (resumed) {
@@ -56,7 +55,7 @@ export function printRunHeader({
   console.error(`▸ running suite ${suite.id}@${suite.version}${scopeNote} against ${modelId} via ${config.harness}…`);
   if (discovered) {
     const facts = [
-      discovered.name !== modelId ? `actual model ${discovered.name}` : null,
+      discovered.name && discovered.name !== modelId ? `actual model ${discovered.name}` : null,
       config.quantization ? `quant ${config.quantization}` : null,
       config.contextWindow ? `context ${config.contextWindow}` : null,
     ].filter(Boolean);
@@ -65,10 +64,10 @@ export function printRunHeader({
   if (pinned) console.error(`  pinned endpoint ${pinned.tag} · ${pinnedFacts(pinned).join(" · ")}`);
   if (local) {
     console.error(
-      `  local endpoint ${local.baseUrl ?? DEFAULT_BASE_URL_LABEL} · GPU $${local.cost.gpuHourlyUsd}/hr (estimated cost)`,
+      `  local endpoint ${local.baseUrl ?? DEFAULT_BASE_URL_LABEL} · GPU $${local.gpuHourlyUsd}/hr (estimated cost)`,
     );
-    console.error(`  hardware ${hardwareSummary(local.hardware)}`);
   }
+  if (hardware) console.error(`  hardware ${hardwareSummary(hardware)}`);
 }
 
 export function printRunSummary(artifact: Artifact, isLocal: boolean): void {

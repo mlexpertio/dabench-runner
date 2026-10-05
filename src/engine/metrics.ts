@@ -3,15 +3,25 @@ import type { CaseMetrics, Cost, MemoryUsage, Metrics } from "./schema";
 
 const USD = "USD";
 
-interface CaseMeasurement {
+interface TimedOutput {
+  timedTokens: number;
+  timedMs: number;
+}
+
+export interface CaseTiming extends TimedOutput {
+  requestMs: number;
+}
+
+interface CaseMeasurement extends CaseTiming {
   promptTokens: number;
   completionTokens: number;
   reasoningTokens: number;
-  requestMs: number;
-  /** Output tokens and generating time of the model calls whose output streamed long enough to time. */
-  timedTokens: number;
-  timedMs: number;
   vramMb: number | null;
+}
+
+export interface MeasuredCase {
+  metrics: CaseMetrics;
+  timed: TimedOutput;
 }
 
 export function caseMetrics(m: CaseMeasurement): CaseMetrics {
@@ -26,32 +36,36 @@ export function caseMetrics(m: CaseMeasurement): CaseMetrics {
   };
 }
 
-/** The run's numbers, all derived from its recorded cases, so a resumed run adds up like a fresh one. */
-export function runMetrics(cases: CaseMetrics[], memory: MemoryUsage | null): Metrics {
-  const prompt = total(cases, (c) => c.tokens.prompt);
-  const completion = total(cases, (c) => c.tokens.completion);
-  const rated = cases.filter((c) => c.tokensPerSecond > 0);
+export function recordedOutput({ tokens, tokensPerSecond }: CaseMetrics): TimedOutput {
+  if (tokensPerSecond <= 0) return { timedTokens: 0, timedMs: 0 };
+  return { timedTokens: tokens.completion, timedMs: (tokens.completion / tokensPerSecond) * MS_PER_SECOND };
+}
+
+export function runMetrics(cases: MeasuredCase[], memory: MemoryUsage | null): Metrics {
+  const recorded = cases.map((c) => c.metrics);
+  const prompt = total(recorded, (c) => c.tokens.prompt);
+  const completion = total(recorded, (c) => c.tokens.completion);
+  const rated = recorded.filter((c) => c.tokensPerSecond > 0);
   const mean = (items: CaseMetrics[], pick: (c: CaseMetrics) => number) =>
     items.length === 0 ? 0 : round2(total(items, pick) / items.length);
 
   return {
-    tokens: { prompt, completion, reasoning: total(cases, (c) => c.tokens.reasoning), total: prompt + completion },
+    tokens: { prompt, completion, reasoning: total(recorded, (c) => c.tokens.reasoning), total: prompt + completion },
     tokensPerSecond: round2(
       throughput(
-        total(rated, (c) => c.tokens.completion),
-        total(rated, generationMs),
+        total(cases, (c) => c.timed.timedTokens),
+        total(cases, (c) => c.timed.timedMs),
       ),
     ),
     avgTokensPerSecond: mean(rated, (c) => c.tokensPerSecond),
-    avgCompletionTokens: mean(cases, (c) => c.tokens.completion),
-    avgReasoningTokens: mean(cases, (c) => c.tokens.reasoning),
-    latencyMs: total(cases, (c) => c.latencyMs),
+    avgCompletionTokens: mean(recorded, (c) => c.tokens.completion),
+    avgReasoningTokens: mean(recorded, (c) => c.tokens.reasoning),
+    latencyMs: total(recorded, (c) => c.latencyMs),
     vramMb: memory ? Math.max(0, Math.round(memory.peakMb)) : null,
     memory,
   };
 }
 
-/** One reading over a resumed run's sessions; readings of different kinds can't be averaged, so the higher peak stands. */
 export function mergeMemory(previous: MemoryUsage | null, current: MemoryUsage | null): MemoryUsage | null {
   if (!previous) return current;
   if (!current) return previous;
@@ -74,11 +88,6 @@ export function runCost({ tokens, latencyMs }: Metrics, basis: CostBasis): Cost 
   }
   const amountUsd = basis ? apiCost({ promptTokens: tokens.prompt, completionTokens: tokens.completion }, basis) : 0;
   return { amountUsd, currency: USD, estimated: false };
-}
-
-/** The time a case spent generating, recovered from its token count and rate. */
-function generationMs(c: CaseMetrics): number {
-  return (c.tokens.completion / c.tokensPerSecond) * MS_PER_SECOND;
 }
 
 function total<T>(items: T[], pick: (item: T) => number): number {

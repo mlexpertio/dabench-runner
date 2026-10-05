@@ -1,19 +1,19 @@
 import { sha256Canonical } from "./canonical";
-import type { Deployment } from "./deployment";
-import type { CaseSubset } from "./subset";
 import {
   ARTIFACT_SCHEMA_VERSION,
   ArtifactSchema,
   type Artifact,
   type CaseResult,
+  type CaseSubset,
   type CategoryScore,
   type Cost,
+  type Deployment,
   type Hardware,
   type Metrics,
   type ModelConfig,
   type ModelRef,
 } from "./schema";
-import { caseGradingContent, type Suite } from "./suite";
+import type { Suite, TestCase } from "./suite";
 
 interface SuiteFingerprint {
   hash: string;
@@ -25,6 +25,11 @@ export function suiteFingerprint(suite: Suite): SuiteFingerprint {
     hash: sha256Canonical(suite),
     caseHashes: suite.cases.map((testCase) => sha256Canonical(caseGradingContent(testCase))),
   };
+}
+
+function caseGradingContent(testCase: TestCase): Record<string, unknown> {
+  const { id: _id, category: _category, tier: _tier, ...gradingContent } = testCase;
+  return gradingContent;
 }
 
 interface RunSubject {
@@ -62,7 +67,26 @@ interface RunOutcome {
 
 export type ArtifactHeader = Omit<Artifact, keyof RunOutcome>;
 
-/** Everything a run record says before any case has run. */
+export interface CompletedCase {
+  result: CaseResult;
+  suiteIndex: number;
+}
+
+export interface ResumableRun {
+  runId: string;
+  artifact: Artifact | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
+export interface RunStore {
+  findResumableRun(key: RunKey): Promise<ResumableRun | null>;
+  beginRun(header: ArtifactHeader): Promise<void>;
+  checkpointRun(artifact: Artifact, completed: CompletedCase): Promise<void>;
+  completeRun(artifact: Artifact): Promise<void>;
+  completionNote(artifact: Artifact): string;
+}
+
 export function artifactHeader(identity: RunIdentity): ArtifactHeader {
   const { suite, fingerprint } = identity;
   return {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { Harness } from "dabench/engine/harness";
-import { discoverProviderModels, listModels } from "dabench/engine/provider-discovery";
+import { Harness } from "../src/engine/harness";
+import { discoverProviderModels } from "../src/engine/provider-discovery";
 
 function endpointFetch(responses: Record<string, unknown>) {
   const fetchImpl = (async (input: string | URL | Request) => {
@@ -50,7 +50,6 @@ describe("provider-native model discovery", () => {
       quantization: "Q4_K_M",
       contextWindow: 131072,
     });
-    expect(result.models[0].metadata).toHaveProperty("show.capabilities", ["completion"]);
   });
 
   it("fetches llama.cpp /props and derives model name, context, and quantization", async () => {
@@ -78,7 +77,7 @@ describe("provider-native model discovery", () => {
     });
   });
 
-  it("captures vLLM served identity, server config, and version", async () => {
+  it("reads vLLM's served identity and server config", async () => {
     const base = "http://localhost:8000";
     const { fetchImpl } = endpointFetch({
       [`${base}/v1/models`]: {
@@ -87,7 +86,6 @@ describe("provider-native model discovery", () => {
       [`${base}/server_info?config_format=json`]: {
         vllm_config: { model_config: { quantization: "awq", max_model_len: 65536 } },
       },
-      [`${base}/version`]: { version: "0.10.0" },
     });
     const result = await discoverProviderModels({
       harness: Harness.Vllm,
@@ -101,7 +99,6 @@ describe("provider-native model discovery", () => {
       quantization: "awq",
       contextWindow: 65536,
     });
-    expect(result.models[0].metadata).toHaveProperty("version.version", "0.10.0");
   });
 
   it("preserves OpenRouter's complete model record alongside normalized fields", async () => {
@@ -135,7 +132,7 @@ describe("provider-native model discovery", () => {
   });
 });
 
-describe("listModels", () => {
+describe("discovery on any other OpenAI-compatible server", () => {
   it("reads a bare /models list under the base URL, skipping malformed entries and unreadable pricing", async () => {
     const base = "https://gateway.example/openai";
     const { fetchImpl } = endpointFetch({
@@ -156,15 +153,16 @@ describe("listModels", () => {
       },
     });
 
-    expect(await listModels({ baseUrl: `${base}/`, fetchImpl })).toEqual([
+    expect(
+      (await discoverProviderModels({ harness: "custom gateway", baseUrl: `${base}/`, fetchImpl })).models,
+    ).toEqual([
       {
         id: "acme/chat-7b",
         name: "",
         contextWindow: 32768,
         pricing: { promptUsdPerToken: 1e-6, completionUsdPerToken: 2e-6 },
-        metadata: {},
       },
-      { id: "x", name: "", metadata: {} },
+      { id: "x", name: "" },
     ]);
   });
 });

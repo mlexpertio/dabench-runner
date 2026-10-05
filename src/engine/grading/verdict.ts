@@ -14,7 +14,6 @@ export const FULL_QUALITY = 100;
 const PREVIEW_CHARS = 80;
 export const WIDE_PREVIEW_CHARS = 160;
 
-/** The gate failed, so every check that depends on it fails with it. */
 export function failedGate(gate: string, detail: string, dependents: string[] = [], dependentDetail = ""): Grading {
   return {
     correctness: 0,

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { suiteFingerprint } from "dabench/engine/artifact";
-import { canonicalize } from "dabench/engine/canonical";
-import type { Suite, TestCase } from "dabench/engine/suite";
+import { suiteFingerprint } from "../src/engine/artifact";
+import type { Suite, TestCase } from "../src/engine/suite";
 
 const SAMPLE_CASE: Extract<TestCase, { graderKind: "exact" }> = {
   id: "c1",
@@ -31,12 +30,6 @@ function sampleSuite(cases: TestCase[] = [SAMPLE_CASE]): Suite {
     cases,
   };
 }
-
-describe("canonical hashing", () => {
-  it("canonicalizes independent of key insertion order (the hashing invariant)", () => {
-    expect(canonicalize({ a: 1, b: { c: 2, d: 3 } })).toBe(canonicalize({ b: { d: 3, c: 2 }, a: 1 }));
-  });
-});
 
 describe("suite fingerprint — proves the suite without disclosing it", () => {
   it("hashes each case's grading content, so authored tier metadata leaves case hashes alone", () => {

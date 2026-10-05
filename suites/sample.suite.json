@@ -353,9 +353,7 @@
           "latest_local_time": "16:06",
           "exception_code": null
         },
-        "mode": "exact",
-        "arrayOrder": "ordered",
-        "extraction": "strict"
+        "arrayOrder": "ordered"
       }
     },
     {
@@ -373,9 +371,7 @@
           "replaced_parts": ["B-42", "F-8"],
           "technician": "Jo Tan"
         },
-        "mode": "exact",
-        "arrayOrder": "ordered",
-        "extraction": "strict"
+        "arrayOrder": "ordered"
       }
     },
     {
@@ -506,9 +502,7 @@
           "answer": "10:00 to 14:00 UTC",
           "source_id": "S2"
         },
-        "mode": "exact",
-        "arrayOrder": "ordered",
-        "extraction": "strict"
+        "arrayOrder": "ordered"
       }
     },
     {
@@ -525,9 +519,7 @@
           "answer": null,
           "source_id": null
         },
-        "mode": "exact",
-        "arrayOrder": "ordered",
-        "extraction": "strict"
+        "arrayOrder": "ordered"
       }
     },
     {
@@ -566,9 +558,7 @@
           "decision": "hold",
           "missing": ["manager approval"]
         },
-        "mode": "exact",
-        "arrayOrder": "ordered",
-        "extraction": "strict"
+        "arrayOrder": "ordered"
       }
     },
     {
@@ -584,9 +574,7 @@
           "reorder": true,
           "quantity": 23
         },
-        "mode": "exact",
-        "arrayOrder": "ordered",
-        "extraction": "strict"
+        "arrayOrder": "ordered"
       }
     },
     {

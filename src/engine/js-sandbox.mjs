@@ -13,8 +13,8 @@ function compile(code) {
 }
 
 function call({ setup, code, entry, argsJson }) {
-  // Block VM escapes through host constructors.
-  const context = createContext(Object.create(null), {
+  const globalWithoutHostPrototypes = Object.create(null);
+  const context = createContext(globalWithoutHostPrototypes, {
     codeGeneration: { strings: false, wasm: false },
     microtaskMode: "afterEvaluate",
   });

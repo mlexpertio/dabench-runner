@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { reasoningTagChars } from "dabench/engine/inline-reasoning";
-import { caseMetrics, mergeMemory, runMetrics } from "dabench/engine/metrics";
-import type { MemoryUsage } from "dabench/engine/schema";
+import { reasoningTagChars } from "../src/engine/inline-reasoning";
+import { caseMetrics, mergeMemory, recordedOutput, runMetrics } from "../src/engine/metrics";
+import type { MemoryUsage } from "../src/engine/schema";
 
 const memoryFixture: MemoryUsage = {
   kind: "vram",
@@ -13,58 +13,43 @@ const memoryFixture: MemoryUsage = {
 
 type CaseMeasurement = Parameters<typeof caseMetrics>[0];
 
-const measurement = (over: Partial<CaseMeasurement> = {}): CaseMeasurement => ({
-  promptTokens: 20,
-  completionTokens: 60,
-  reasoningTokens: 0,
-  requestMs: 2000,
-  timedTokens: 60,
-  timedMs: 2000,
-  vramMb: null,
-  ...over,
-});
-
-describe("caseMetrics — one test's reading", () => {
-  it("counts tok/s over the generation window only, while latency keeps the wait for the first token", () => {
-    const m = caseMetrics(measurement({ completionTokens: 60, requestMs: 5000, timedTokens: 60, timedMs: 2000 }));
-    expect(m.tokensPerSecond).toBe(30);
-    expect(m.latencyMs).toBe(5000);
-  });
-
-  it("rounds a memory reading and clamps reasoning to the completion count", () => {
-    const m = caseMetrics(measurement({ reasoningTokens: 999, vramMb: 8123.7 }));
-    expect(m.tokens.reasoning).toBe(60);
-    expect(m.vramMb).toBe(8124);
-  });
-});
+const measured = (over: Partial<CaseMeasurement> = {}) => {
+  const measurement: CaseMeasurement = {
+    promptTokens: 20,
+    completionTokens: 60,
+    reasoningTokens: 0,
+    requestMs: 2000,
+    timedTokens: 60,
+    timedMs: 2000,
+    vramMb: null,
+    ...over,
+  };
+  return { metrics: caseMetrics(measurement), timed: measurement };
+};
 
 describe("runMetrics — per-case readings → run-level aggregate", () => {
-  it("sums tokens and request time, takes throughput over the generation windows, and means the per-case readings", () => {
-    const cases = [
-      measurement({ completionTokens: 60, reasoningTokens: 20, requestMs: 3000, timedTokens: 60, timedMs: 2000 }),
-      measurement({ completionTokens: 90, reasoningTokens: 30, requestMs: 4000, timedTokens: 90, timedMs: 3000 }),
-    ].map(caseMetrics);
-    const m = runMetrics(cases, memoryFixture);
-    expect(m.tokens).toEqual({ prompt: 40, completion: 150, reasoning: 50, total: 190 });
+  it("sums tokens and request time, pools tok/s over the timed output, and means the cases it could time", () => {
+    const m = runMetrics(
+      [
+        measured({ completionTokens: 60, reasoningTokens: 20, requestMs: 3000, timedTokens: 60, timedMs: 2000 }),
+        measured({ completionTokens: 90, reasoningTokens: 30, requestMs: 4000, timedTokens: 90, timedMs: 3000 }),
+        measured({ timedTokens: 0, timedMs: 0 }),
+      ],
+      memoryFixture,
+    );
+    expect(m.tokens).toEqual({ prompt: 60, completion: 210, reasoning: 50, total: 270 });
     expect(m.tokensPerSecond).toBe(30);
-    expect(m.latencyMs).toBe(7000);
+    expect(m.latencyMs).toBe(9000);
     expect(m.avgTokensPerSecond).toBe(30);
-    expect(m.avgCompletionTokens).toBe(75);
-    expect(m.avgReasoningTokens).toBe(25);
+    expect(m.avgCompletionTokens).toBe(70);
     expect(m.vramMb).toBe(14681);
     expect(m.memory).toEqual(memoryFixture);
+    expect(runMetrics([], null).tokensPerSecond).toBe(0);
   });
 
-  it("means tok/s over the cases it could time", () => {
-    const cases = [measurement({ timedTokens: 60, timedMs: 2000 }), measurement({ timedTokens: 0, timedMs: 0 })];
-    expect(runMetrics(cases.map(caseMetrics), null).avgTokensPerSecond).toBe(30);
-  });
-
-  it("no cases → all zeros, never NaN", () => {
-    const m = runMetrics([], null);
-    expect(m.tokensPerSecond).toBe(0);
-    expect(m.avgTokensPerSecond).toBe(0);
-    expect(Number.isNaN(m.avgCompletionTokens)).toBe(false);
+  it("keeps a resumed case's own rate", () => {
+    const { metrics } = measured({ completionTokens: 90, timedTokens: 30, timedMs: 1000 });
+    expect(runMetrics([{ metrics, timed: recordedOutput(metrics) }], null).tokensPerSecond).toBe(30);
   });
 });
 

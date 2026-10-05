@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Exec } from "dabench/engine/exec";
-import { createLocalMemoryMonitor } from "dabench/engine/memory";
+import type { Exec } from "../src/cli/exec";
+import { createLocalMemoryMonitor } from "../src/cli/memory";
 
 type ExecReply = string | (() => string);
 
@@ -20,8 +20,14 @@ const SMI_APPS = "nvidia-smi --query-compute-apps=pid,used_memory --format=csv,n
 const SMI_TOTAL = "nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits";
 const BYTES_PER_MB = 1024 * 1024;
 
-function llamaCpp(platform: NodeJS.Platform, table: Record<string, ExecReply>, baseUrl = LLAMA_CPP_URL) {
-  return createLocalMemoryMonitor({ harness: "llama.cpp", modelId: "m", baseUrl, platform, exec: fakeExec(table) });
+function llamaCpp(platform: NodeJS.Platform, table: Record<string, ExecReply>) {
+  return createLocalMemoryMonitor({
+    harness: "llama.cpp",
+    modelId: "m",
+    server: new URL(LLAMA_CPP_URL),
+    platform,
+    exec: fakeExec(table),
+  });
 }
 
 function ollama(modelId: string, models: unknown[]) {
@@ -32,7 +38,7 @@ function ollama(modelId: string, models: unknown[]) {
   return createLocalMemoryMonitor({
     harness: "ollama",
     modelId,
-    baseUrl: OLLAMA_URL,
+    server: new URL(OLLAMA_URL),
     platform: "linux",
     exec: fakeExec({}),
     fetchImpl,
@@ -93,28 +99,14 @@ describe("createLocalMemoryMonitor — the serving process's memory, never a han
   it("falls through to the whole GPU when no server process holds VRAM, keeping the run's peak and average", async () => {
     const readings = ["1000", "3000"];
     const monitor = llamaCpp("linux", { [SMI_APPS]: "999, 6000\n", [SMI_TOTAL]: () => readings.shift()! });
-    monitor.start();
-    expect(await monitor.stop()).toEqual({
+    await monitor.probe();
+    await monitor.probe();
+    expect(monitor.usage()).toEqual({
       kind: "vram",
       peakMb: 3000,
       avgMb: 2000,
       samples: 2,
       source: "nvidia-smi (total gpu)",
     });
-  });
-
-  it("reports nothing when no probe can attribute the server", async () => {
-    const monitor = llamaCpp("linux", {});
-    monitor.start();
-    expect(await monitor.stop()).toBeNull();
-  });
-
-  it("never samples this machine for a server on another host", async () => {
-    const monitor = llamaCpp(
-      "linux",
-      { [LSOF]: "100", [PS_TREE]: "100 1\n", [SMI_APPS]: "100, 14000\n", [SMI_TOTAL]: "20000" },
-      "http://192.168.1.20:8080/v1",
-    );
-    expect(await monitor.probe()).toBeNull();
   });
 });

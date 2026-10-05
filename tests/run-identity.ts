@@ -1,7 +1,6 @@
-import { runKey, type RunIdentity } from "dabench/engine/artifact";
-import { Deployment } from "dabench/engine/deployment";
-import type { ModelConfig, ModelRef } from "dabench/engine/schema";
-import type { Suite } from "dabench/engine/suite";
+import { runKey, type RunIdentity } from "../src/engine/artifact";
+import { Deployment, type ModelConfig, type ModelRef } from "../src/engine/schema";
+import type { Suite } from "../src/engine/suite";
 
 interface TestIdentityInput extends Partial<Omit<RunIdentity, "fingerprint" | "configHash">> {
   suite: Suite;

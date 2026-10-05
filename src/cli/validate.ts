@@ -1,6 +1,5 @@
 import { pluralize } from "../engine/format";
-import { requireFlag, type Flags } from "./args";
-import { loadSuite } from "./suite-loader";
+import { loadSuite, requireFlag, type Flags } from "./args";
 
 export enum ValidateFlag {
   Suite = "suite",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { aggregate, composite } from "dabench/engine/aggregator";
-import type { CaseResult, CategoryScore } from "dabench/engine/schema";
+import { aggregate, composite } from "../src/engine/aggregator";
+import type { CaseResult, CategoryScore } from "../src/engine/schema";
 
 function caseResult(caseId: string, category: string, score: number): CaseResult {
   return {

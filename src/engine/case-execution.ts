@@ -1,5 +1,4 @@
-import { ToolEnvironment } from "./tool-environment";
-import { splitReasoningTokens } from "./calc";
+import { EDIT_FORMAT_INSTRUCTIONS } from "./code-edits";
 import {
   callArguments,
   completionTokensOf,
@@ -12,13 +11,13 @@ import {
   type StreamResult,
   type ToolCall,
 } from "./client";
-import { generationParameters } from "./generation";
-import { callMatches } from "./tool-match";
+import { withSuiteBudgets } from "./generation";
 import { reasoningTagChars, stripReasoning } from "./inline-reasoning";
-import type { CategoryGeneration, ModelConfig, ToolCallRecord } from "./schema";
 import { toStandardJsonSchema } from "./json-schema";
-import { EDIT_FORMAT_INSTRUCTIONS } from "./code-edits";
+import type { CategoryGeneration, ModelConfig, ToolCallRecord } from "./schema";
 import { CODE_LANGUAGE, type CannedToolResult, type TestCase, type ToolTraceCase } from "./suite";
+import { ToolEnvironment } from "./tool-environment";
+import { callMatches } from "./tool-match";
 
 export interface CaseExecution {
   text: string;
@@ -27,7 +26,6 @@ export interface CaseExecution {
   usage: Required<CompletionUsage>;
   finishReason?: string;
   reasoningText?: string;
-  model?: string;
 }
 
 interface CaseTarget {
@@ -36,7 +34,13 @@ interface CaseTarget {
   generation: CategoryGeneration;
 }
 
+interface ToolResponder {
+  maxTurns: number;
+  answer(call: ToolCall): unknown;
+}
+
 type Completion = StreamResult & { usage: CompletionUsage };
+type FollowUp = (completion: Completion, turn: number) => ChatMessage[] | null;
 
 const DEFAULT_TOOL_ACK = { ok: true };
 const MIN_TOOL_TURNS = 8;
@@ -44,7 +48,6 @@ const TOOL_TURN_HEADROOM = 2;
 const CODE_FENCE = "```";
 const SQL_INSTRUCTIONS =
   "Answer with one SQLite query in a ```sql code block. It runs read-only against a database with this schema:";
-const RESPONSE_FORMAT_NAME_MAX_LENGTH = 64;
 const FAILED_FINISH_REASON = "error";
 const GENERATED_CALL_ID_PREFIX = "call";
 
@@ -57,54 +60,67 @@ export function failedExecution(): CaseExecution {
   };
 }
 
-export async function executeCase(
-  client: CompletionClient,
-  testCase: TestCase,
-  target: CaseTarget,
-): Promise<CaseExecution> {
+export function executeCase(client: CompletionClient, testCase: TestCase, target: CaseTarget): Promise<CaseExecution> {
   const request = buildCaseRequest(testCase, target);
-  if (testCase.graderKind === "tool-state")
-    return runToolLoop(client, new ToolEnvironment(testCase.environment), request);
-  if (testCase.graderKind === "tooltrace") return runToolLoop(client, new CannedResults(testCase), request);
-  return runConversation(client, request, "turns" in testCase.prompt ? (testCase.prompt.turns ?? []) : []);
+  if (testCase.graderKind === "tool-state") {
+    return runToolLoop(client, request, new ToolEnvironment(testCase.environment));
+  }
+  if (testCase.graderKind === "tooltrace") return runToolLoop(client, request, new CannedResults(testCase));
+  const followUps = testCase.prompt.turns ?? [];
+  return runTurns(client, request, followUps.length + 1, ({ text }, turn) =>
+    turn < followUps.length ? [answerOnlyReply(text), { role: "user", content: followUps[turn] }] : null,
+  );
 }
 
-/**
- * A reply sent back as history: its answer text only, the way a Chat Completions client sends it.
- * Reasoning never goes back, inline or reported separately, so every model sees the same kind of history.
- */
-function earlierReply(text: string, toolCalls?: IssuedToolCall[]): ChatMessage {
+function answerOnlyReply(text: string, toolCalls?: IssuedToolCall[]): ChatMessage {
   return { role: "assistant", content: stripReasoning(text), ...(toolCalls ? { toolCalls } : {}) };
 }
 
-/** The first message, then each scripted follow-up after the model's previous reply. The last reply is the answer. */
-async function runConversation(
+async function runToolLoop(
   client: CompletionClient,
   request: CompletionRequest,
-  followUps: string[],
+  responder: ToolResponder,
+): Promise<CaseExecution> {
+  const toolCalls: IssuedToolCall[] = [];
+  const execution = await runTurns(client, request, responder.maxTurns, (completion, turn) => {
+    const calls = (completion.toolCalls ?? []).map((call, i) => ({
+      ...call,
+      id: call.id ?? `${GENERATED_CALL_ID_PREFIX}_${turn}_${i}`,
+    }));
+    if (calls.length === 0) return null;
+    toolCalls.push(...calls);
+    return [
+      answerOnlyReply(completion.text, calls),
+      ...calls.map((call): ChatMessage => ({
+        role: "tool",
+        toolCallId: call.id,
+        content: JSON.stringify(responder.answer(call)),
+      })),
+    ];
+  });
+  return { ...execution, toolCalls };
+}
+
+async function runTurns(
+  client: CompletionClient,
+  request: CompletionRequest,
+  maxTurns: number,
+  followUp: FollowUp,
 ): Promise<CaseExecution> {
   const messages = [...request.messages];
   const exchange = new Exchange();
-  let reply = "";
-
-  for (const followUp of [null, ...followUps]) {
-    if (followUp !== null) {
-      messages.push(earlierReply(reply), { role: "user", content: followUp });
-    }
+  for (let turn = 0; turn < maxTurns; turn++) {
     const completion = await runCompletion(client, { ...request, messages: [...messages] });
     exchange.record(completion);
-    reply = completion.text;
+    const next = followUp(completion, turn);
+    if (!next) break;
+    messages.push(...next);
   }
-
   return exchange.execution();
 }
 
-/** The user message, with what the engine adds for the grader: the answer's JSON Schema or the file to edit. */
-function userText(testCase: TestCase, answerSchema: Record<string, unknown> | undefined): string {
+function userText(testCase: TestCase): string {
   const { user } = testCase.prompt;
-  if (answerSchema) {
-    return `${user}\n\nYour answer must be a single JSON value conforming to this JSON Schema:\n${JSON.stringify(answerSchema, null, 2)}`;
-  }
   if (testCase.graderKind === "sql") {
     return `${user}\n\n${SQL_INSTRUCTIONS}\n\n${CODE_FENCE}sql\n${testCase.sql.schema.trimEnd()}\n${CODE_FENCE}`;
   }
@@ -115,23 +131,16 @@ function userText(testCase: TestCase, answerSchema: Record<string, unknown> | un
 }
 
 function buildCaseRequest(testCase: TestCase, target: CaseTarget): CompletionRequest {
-  const answerSchema = testCase.graderKind === "schema" ? toStandardJsonSchema(testCase.schema) : undefined;
-  const user = userText(testCase, answerSchema);
-
   const messages: ChatMessage[] = [];
   if (testCase.prompt.system) messages.push({ role: "system", content: testCase.prompt.system });
-  messages.push({ role: "user", content: user });
+  messages.push({ role: "user", content: userText(testCase) });
   const tools = testCase.graderKind === "tooltrace" || testCase.graderKind === "tool-state" ? testCase.tools : [];
 
   return {
     model: target.model,
     messages,
     temperature: target.config.temperature ?? undefined,
-    providerParameters: generationParameters(
-      target.config.harness,
-      target.config.providerParameters,
-      target.generation,
-    ),
+    providerParameters: withSuiteBudgets(target.config.harness, target.config.providerParameters, target.generation),
     ...(tools.length > 0
       ? {
           tools: tools.map((t) => ({
@@ -141,45 +150,9 @@ function buildCaseRequest(testCase: TestCase, target: CaseTarget): CompletionReq
           })),
         }
       : {}),
-    ...(target.config.nativeJsonSchema && answerSchema
-      ? {
-          responseFormat: {
-            name: testCase.id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, RESPONSE_FORMAT_NAME_MAX_LENGTH),
-            schema: answerSchema,
-          },
-        }
-      : {}),
   };
 }
 
-async function runToolLoop(
-  client: CompletionClient,
-  responder: { maxTurns: number; answer(call: ToolCallRecord): unknown },
-  request: CompletionRequest,
-): Promise<CaseExecution> {
-  const messages = [...request.messages];
-  const toolCalls: ToolCall[] = [];
-  const exchange = new Exchange();
-
-  for (let turn = 0; turn < responder.maxTurns; turn++) {
-    const completion = await runCompletion(client, { ...request, messages: [...messages] });
-    const calls = (completion.toolCalls ?? []).map((call, i) => ({
-      ...call,
-      id: call.id ?? `${GENERATED_CALL_ID_PREFIX}_${turn}_${i}`,
-    }));
-    exchange.record(completion, calls);
-    if (calls.length === 0) break;
-    messages.push(earlierReply(completion.text, calls));
-    for (const call of calls) {
-      toolCalls.push(call);
-      messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(responder.answer(call)) });
-    }
-  }
-
-  return exchange.execution(toolCalls);
-}
-
-/** What a case's replies add up to: usage, reasoning (provider-reported or inline), and every reply's text. */
 class Exchange {
   private readonly usage: CompletionUsage = { promptTokens: 0, completionTokens: 0 };
   private readonly replies: string[] = [];
@@ -187,26 +160,23 @@ class Exchange {
   private reasoningChars = 0;
   private answerChars = 0;
   private finishReason: string | undefined;
-  private model: string | undefined;
 
-  record(completion: Completion, calls: readonly ToolCall[] = []): void {
+  record(completion: Completion): void {
     const { text, reasoningText } = completion;
     addUsage(this.usage, completion.usage);
     const inlineReasoningChars = reasoningText ? 0 : reasoningTagChars(text);
     this.reasoningChars += reasoningText ? reasoningText.length : inlineReasoningChars;
-    this.answerChars += text.length - inlineReasoningChars + callsChars(calls);
+    this.answerChars += text.length - inlineReasoningChars + callsChars(completion.toolCalls ?? []);
     if (reasoningText) this.reasoning += (this.reasoning ? "\n" : "") + reasoningText;
     this.replies.push(text);
     this.finishReason = completion.finishReason;
-    this.model = completion.model ?? this.model;
   }
 
-  execution(toolCalls?: ToolCall[]): CaseExecution {
+  execution(): CaseExecution {
     const { usage } = this;
     return {
       text: this.replies.at(-1) ?? "",
       earlierReplies: this.replies.slice(0, -1),
-      ...(toolCalls ? { toolCalls } : {}),
       usage: {
         ...usage,
         reasoningTokens:
@@ -214,9 +184,14 @@ class Exchange {
       },
       finishReason: this.finishReason,
       reasoningText: this.reasoning || undefined,
-      model: this.model,
     };
   }
+}
+
+function splitReasoningTokens(completionTokens: number, reasoningChars: number, answerChars: number): number {
+  if (reasoningChars <= 0) return 0;
+  if (answerChars <= 0) return completionTokens;
+  return Math.round(completionTokens * (reasoningChars / (reasoningChars + answerChars)));
 }
 
 function addUsage(total: CompletionUsage, usage: CompletionUsage): void {
@@ -229,7 +204,7 @@ function callsChars(calls: readonly ToolCall[]): number {
   return calls.reduce((sum, call) => sum + call.name.length + callArguments(call).length, 0);
 }
 
-class CannedResults {
+class CannedResults implements ToolResponder {
   readonly maxTurns: number;
   private readonly entries: CannedToolResult[];
   private readonly spent = new Set<CannedToolResult>();
@@ -240,7 +215,6 @@ class CannedResults {
       testCase.toolOptions?.maxTurns ?? Math.max(MIN_TOOL_TURNS, testCase.expectedTools.length + TOOL_TURN_HEADROOM);
   }
 
-  /** The first unspent entry whose name matches and whose args the call contains, else a plain ack. */
   answer(call: ToolCallRecord): unknown {
     const entry = this.entries.find((e) => !this.spent.has(e) && callMatches(e, call));
     if (!entry) return DEFAULT_TOOL_ACK;

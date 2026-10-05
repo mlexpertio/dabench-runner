@@ -1,28 +1,23 @@
 import { fork, type ChildProcess, type Serializable } from "node:child_process";
 
 const SANDBOX_ENV = { NODE_ENV: "production" } as const;
-
-interface SandboxExit {
-  code: number | null;
-  signal: NodeJS.Signals | null;
-}
+const V8_HEAP_EXHAUSTED_SIGNAL = "SIGABRT";
 
 export interface SandboxOptions {
   script: string;
+  label: string;
   args?: string[];
   heapMb?: number;
   serialization?: "json" | "advanced";
-  exitMessage: (exit: SandboxExit) => string;
 }
 
-/** A Node child under the permission model that answers one message at a time and is killed when done. */
 export class Sandbox {
   private constructor(
     private readonly child: ChildProcess,
-    private readonly exitMessage: SandboxOptions["exitMessage"],
+    private readonly label: string,
   ) {}
 
-  static fork({ script, args = [], heapMb, serialization, exitMessage }: SandboxOptions): Sandbox {
+  static fork({ script, label, args = [], heapMb, serialization }: SandboxOptions): Sandbox {
     const child = fork(script, args, {
       execArgv: [
         "--permission",
@@ -34,7 +29,7 @@ export class Sandbox {
       serialization,
       stdio: ["ignore", "ignore", "ignore", "ipc"],
     });
-    return new Sandbox(child, exitMessage);
+    return new Sandbox(child, label);
   }
 
   request<T>(message: Serializable, timeoutMs: number, timeoutReason: string): Promise<T> {
@@ -42,7 +37,6 @@ export class Sandbox {
     return this.nextMessage(timeoutMs, timeoutReason);
   }
 
-  /** Rejects when the child exits, fails or stays silent past the timeout. */
   nextMessage<T>(timeoutMs: number, timeoutReason: string): Promise<T> {
     return new Promise((resolve, reject) => {
       const settle = (outcome: () => void) => {
@@ -54,7 +48,7 @@ export class Sandbox {
       };
       const onMessage = (message: unknown) => settle(() => resolve(message as T));
       const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
-        settle(() => reject(new Error(this.exitMessage({ code, signal }))));
+        settle(() => reject(new Error(this.exitMessage(code, signal))));
       const onError = (err: Error) => settle(() => reject(err));
       const timer = setTimeout(() => settle(() => reject(new Error(timeoutReason))), timeoutMs);
       this.child.on("message", onMessage);
@@ -65,5 +59,11 @@ export class Sandbox {
 
   stop(): void {
     this.child.kill("SIGKILL");
+  }
+
+  private exitMessage(code: number | null, signal: NodeJS.Signals | null): string {
+    return signal === V8_HEAP_EXHAUSTED_SIGNAL
+      ? `the ${this.label} ran out of memory`
+      : `the ${this.label} exited (${code})`;
   }
 }

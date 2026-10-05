@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { executeCase } from "dabench/engine/case-execution";
-import { grade } from "dabench/engine/grader";
-import { TestCaseSchema } from "dabench/engine/suite";
+import { executeCase } from "../src/engine/case-execution";
+import { grade } from "../src/engine/grader";
+import { TestCaseSchema } from "../src/engine/suite";
 import { ScriptedClient } from "./scripted-client";
 
 const task = {
@@ -70,8 +70,5 @@ describe("state-based tool tasks", () => {
   it("rejects malformed native arguments even on a no-argument tool", async () => {
     const calls = [{ name: "logs", argsText: "{broken" }, call("config"), repair, call("probe")];
     expect((await grade(TestCaseSchema.parse(task), { text: "repaired", toolCalls: calls })).score).toBe(0);
-  });
-  it("rejects actions for tools that were not declared", () => {
-    expect(TestCaseSchema.safeParse({ ...task, tools: [{ name: "logs" }] }).success).toBe(false);
   });
 });

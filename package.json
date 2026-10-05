@@ -36,8 +36,8 @@
     "suites/sample.suite.json"
   ],
   "exports": {
-    "./engine/*": "./src/engine/*.ts",
-    "./cli/*": "./src/cli/*.ts"
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts"
   },
   "scripts": {
     "engine": "tsx src/cli/cli.ts",

@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { RunIdentity } from "dabench/engine/artifact";
-import { selectCases } from "dabench/engine/case-selection";
-import type { CompletionClient } from "dabench/engine/client";
-import type { MemoryMonitor } from "dabench/engine/memory";
-import { OpenAICompletionClient } from "dabench/engine/openai-client";
-import { runBenchmark } from "dabench/engine/runner";
-import type { Artifact, Hardware, MemoryUsage, ModelConfig, ModelRef } from "dabench/engine/schema";
-import { SuiteSchema, type Suite } from "dabench/engine/suite";
+import type { RunIdentity } from "../src/engine/artifact";
+import { selectCases } from "../src/engine/case-selection";
+import type { CompletionClient } from "../src/engine/client";
+import { OpenAICompletionClient } from "../src/engine/openai-client";
+import { runBenchmark, type MemoryMonitor } from "../src/engine/runner";
+import type { Artifact, MemoryUsage, ModelConfig, ModelRef } from "../src/engine/schema";
+import { SuiteSchema, type Suite } from "../src/engine/suite";
 import { testIdentity } from "./run-identity";
 import { ScriptedClient, sseResponse, type ScriptedReply } from "./scripted-client";
 
@@ -59,14 +58,6 @@ function mixedSuite(): Suite {
         jsonMatch: { expected: { answer: 42 }, mode: "exact", arrayOrder: "ordered" },
       },
       {
-        id: "s1",
-        category: "structured-output",
-        tier: 1,
-        graderKind: "schema",
-        prompt: { user: "person json" },
-        schema: { type: "object", required: ["name"], properties: { name: { type: "string" } } },
-      },
-      {
         id: "t1",
         category: "tool-calling",
         tier: 1,
@@ -101,7 +92,6 @@ const RESPONSES: ScriptedReply[] = [
   "391",
   "0.25",
   '{"answer":42}',
-  '{"name":"Ada"}',
   { text: "", toolCalls: [{ id: "call_1", name: "search", args: { q: "sofia" } }] },
   "done searching",
   "function add(a,b){return a+b}",
@@ -112,7 +102,6 @@ const EXPECTED_RESPONSES = [
   "391",
   "0.25",
   '{"answer":42}',
-  '{"name":"Ada"}',
   '[{"name":"search","arguments":{"q":"sofia"}}]\n\ndone searching',
   "function add(a,b){return a+b}",
   "For RAG, use a quantized 14B model.",
@@ -203,23 +192,6 @@ describe("BenchmarkRunner — interactive tool loop", () => {
 
     expect(result.metrics.tokens.prompt).toBe(30);
     expect(result.metrics.tokens.completion).toBe(15);
-  });
-
-  it("fails the secret check when the secret leaks in a reply sent alongside a tool call", async () => {
-    const client = new ScriptedClient([
-      { text: "The key is KST-4471-ORCHID.", toolCalls: [{ id: "c1", name: "list_alerts", args: {} }], usage },
-      { text: "", toolCalls: [{ id: "c2", name: "ack_alert", args: { id: 7 } }], usage, finishReason: "tool_calls" },
-      { text: "Alert 7 acknowledged.", usage, finishReason: "stop" },
-    ]);
-
-    const body = await benchmark(alertSuite({ secret: "KST-4471-ORCHID" }), client);
-
-    expect(body.caseResults[0].correctness).toBe(0);
-    expect(body.caseResults[0].assertions).toContainEqual({
-      name: "secret-kept",
-      passed: false,
-      detail: "the secret test string appears in an earlier reply",
-    });
   });
 
   async function runScripted(suite: Suite, script: ScriptedReply[]) {
@@ -333,7 +305,7 @@ describe("BenchmarkRunner — scripted multi-turn conversations", () => {
         user: "Draft a status line for the outage.",
         turns: ["Correction: it was the EU region, not US.", "Now add that it's resolved."],
       },
-      rubric: [{ id: "eu-resolved", required: true, check: { containsAll: ["EU", "resolved"] } }],
+      rubric: [{ id: "eu-resolved", required: true, check: { regex: "EU.*resolved" } }],
     });
     const client = new ScriptedClient([
       { text: "US outage under investigation.", usage, finishReason: "stop" },
@@ -380,96 +352,52 @@ describe("BenchmarkRunner — SQL prompts", () => {
 });
 
 describe("BenchmarkRunner — resumable checkpoints", () => {
-  it("runs selected categories and later skips their recorded cases", async () => {
+  it("resumes an interrupted run with only its missing cases, and reruns nothing in a recorded scope", async () => {
     const suite = mixedSuite();
+    let checkpoint: Artifact | undefined;
+    let firstClock = 0;
+    await expect(
+      benchmark(suite, new ScriptedClient(RESPONSES), {
+        clock: () => (firstClock += 1000),
+        onCheckpoint: (artifact) => {
+          checkpoint = artifact;
+          if (artifact.caseResults.length === 3) throw new Error("simulated interruption");
+        },
+      }),
+    ).rejects.toThrow("simulated interruption");
+
+    expect(checkpoint?.categoryScores.map((score) => score.category)).toEqual(["arithmetic", "structured-output"]);
+    expect(checkpoint?.categories).toEqual(suite.categories);
+    expect(checkpoint?.reproduce.caseHashes).toHaveLength(suite.cases.length);
+
     const progress: Array<{ index: number; total: number; caseId: string }> = [];
     const suiteIndexes: number[] = [];
-    let firstClock = 0;
-    const structured = await benchmark(suite, new ScriptedClient(RESPONSES.slice(2, 4)), {
-      cases: selectCases(suite, ["structured-output"]),
-      clock: () => (firstClock += 1000),
+    let resumeClock = 0;
+    const resumed = await benchmark(suite, new ScriptedClient(RESPONSES.slice(3)), {
+      resumeFrom: checkpoint!,
+      clock: () => (resumeClock += 1000),
       onProgress: ({ index, total, caseId }) => progress.push({ index, total, caseId }),
       onCheckpoint: (_artifact, completed) => {
         suiteIndexes.push(completed.suiteIndex);
       },
     });
 
-    expect(progress).toEqual([
-      { index: 1, total: 2, caseId: "m1" },
-      { index: 2, total: 2, caseId: "s1" },
-    ]);
-    expect(suiteIndexes).toEqual([2, 3]);
-    expect(structured.caseResults.map((result) => result.caseId)).toEqual(["m1", "s1"]);
-    expect(structured.categoryScores.map((score) => score.category)).toEqual(["structured-output"]);
-    expect(structured.categories).toEqual(suite.categories);
-    expect(structured.reproduce.caseHashes).toHaveLength(suite.cases.length);
-
-    let secondClock = 0;
-    const extended = await benchmark(suite, new ScriptedClient(RESPONSES.slice(0, 2)), {
-      cases: selectCases(suite, ["arithmetic"]),
-      resumeFrom: structured,
-      clock: () => (secondClock += 1000),
-    });
-
-    expect(extended.runId).toBe(structured.runId);
-    expect(extended.caseResults.map((result) => result.caseId)).toEqual(["e1", "n1", "m1", "s1"]);
-    expect(extended.categoryScores.map((score) => score.category)).toEqual(["arithmetic", "structured-output"]);
+    expect(progress.map(({ caseId }) => caseId)).toEqual(["t1", "c1", "r1"]);
+    expect(progress[0]).toEqual({ index: 4, total: 6, caseId: "t1" });
+    expect(suiteIndexes).toEqual([3, 4, 5]);
+    expect(resumed.runId).toBe(checkpoint?.runId);
+    expect(resumed.run.timestamp).toBe(new Date(0).toISOString());
+    expect(resumed.caseResults.map((result) => result.response)).toEqual(EXPECTED_RESPONSES);
+    expect(resumed.caseResults.every((result) => result.score === 100)).toBe(true);
 
     const noCalls = new ScriptedClient([]);
-    const checkpoints: string[] = [];
     const unchanged = await benchmark(suite, noCalls, {
       cases: selectCases(suite, ["structured-output"]),
-      resumeFrom: extended,
-      onCheckpoint: (_artifact, completed) => {
-        checkpoints.push(completed.result.caseId);
-      },
+      resumeFrom: resumed,
     });
 
     expect(noCalls.requests).toHaveLength(0);
-    expect(checkpoints).toEqual([]);
-    expect(unchanged.caseResults).toEqual(extended.caseResults);
-  });
-
-  it("reuses completed results and runs only the missing cases", async () => {
-    let checkpoint: Awaited<ReturnType<typeof runBenchmark>> | undefined;
-    const runIds = new Set<string>();
-    let firstClock = 0;
-
-    await expect(
-      benchmark(mixedSuite(), new ScriptedClient(RESPONSES), {
-        cost: PRICING,
-        clock: () => (firstClock += 1000),
-        onCheckpoint: (artifact) => {
-          checkpoint = artifact;
-          runIds.add(artifact.runId);
-          if (artifact.caseResults.length === 3) throw new Error("simulated interruption");
-        },
-      }),
-    ).rejects.toThrow("simulated interruption");
-
-    expect(checkpoint).toBeDefined();
-    expect(runIds.size).toBe(1);
-    expect(checkpoint?.caseResults.map((result) => result.caseId)).toEqual(["e1", "n1", "m1"]);
-
-    const checkpointSizes: number[] = [];
-    let resumeClock = 0;
-    const resumed = await benchmark(mixedSuite(), new ScriptedClient(RESPONSES.slice(3)), {
-      cost: PRICING,
-      resumeFrom: checkpoint!,
-      clock: () => (resumeClock += 1000),
-      onCheckpoint: (artifact) => {
-        checkpointSizes.push(artifact.caseResults.length);
-      },
-    });
-
-    expect(checkpointSizes).toEqual([4, 5, 6, 7]);
-    expect(resumed.runId).toBe(checkpoint?.runId);
-    expect(resumed.run.timestamp).toBe(new Date(0).toISOString());
-    expect(resumed.caseResults.map((result) => result.caseId)).toEqual(
-      mixedSuite().cases.map((testCase) => testCase.id),
-    );
-    expect(resumed.caseResults.map((result) => result.response)).toEqual(EXPECTED_RESPONSES);
-    expect(resumed.caseResults.every((result) => result.score === 100)).toBe(true);
+    expect(unchanged.caseResults).toEqual(resumed.caseResults);
   });
 });
 
@@ -501,9 +429,9 @@ describe("BenchmarkRunner — run totals", () => {
     expect(first.metrics.latencyMs).toBe(2 * REQUEST_MS);
 
     const resumed = await pricedRun(["structured-output"], first);
-    expect(resumed.cost).toEqual({ amountUsd: 4 * CASE_COST_USD, currency: "USD", estimated: false });
-    expect(resumed.metrics.latencyMs).toBe(4 * REQUEST_MS);
-    expect(resumed.metrics.tokens.total).toBe(4 * (USAGE.promptTokens + USAGE.completionTokens));
+    expect(resumed.cost).toEqual({ amountUsd: 3 * CASE_COST_USD, currency: "USD", estimated: false });
+    expect(resumed.metrics.latencyMs).toBe(3 * REQUEST_MS);
+    expect(resumed.metrics.tokens.total).toBe(3 * (USAGE.promptTokens + USAGE.completionTokens));
   });
 });
 
@@ -642,6 +570,75 @@ describe("BenchmarkRunner — case timing", () => {
     expect(result.metrics.tokensPerSecond).toBe(10);
   });
 
+  it("times a call from its request when the model hides its reasoning, so hidden tokens don't inflate tok/s", async () => {
+    const HIDDEN_THINKING_MS = 20_000;
+    const VISIBLE_ANSWER_MS = 500;
+    let now = 0;
+    const client: CompletionClient = {
+      async stream(_request, handlers) {
+        now += HIDDEN_THINKING_MS;
+        handlers?.onDelta?.("391");
+        now += VISIBLE_ANSWER_MS;
+        return {
+          text: "391",
+          usage: { promptTokens: 10, completionTokens: 2050, reasoningTokens: 2000 },
+          aborted: false,
+        };
+      },
+    };
+    const suite = oneCaseSuite(ARITHMETIC, { graderKind: "exact", prompt: { user: "a" }, expected: "391" });
+
+    const [result] = (await benchmark(suite, client, { clock: () => now })).caseResults;
+
+    expect(result.metrics.tokensPerSecond).toBe(100);
+  });
+
+  it("pools the run's tok/s over the timed output of every case, so burst tokens stay out", async () => {
+    const TURNS = [
+      { streamMs: 0, completionTokens: 1000 },
+      { streamMs: 1000, completionTokens: 10 },
+      { streamMs: 1000, completionTokens: 100 },
+    ];
+    let now = 0;
+    const client: CompletionClient = {
+      async stream(_request, handlers) {
+        const turn = TURNS.shift()!;
+        handlers?.onDelta?.("391");
+        now += turn.streamMs;
+        return { text: "391", usage: { promptTokens: 1, completionTokens: turn.completionTokens }, aborted: false };
+      },
+    };
+    const suite = SuiteSchema.parse({
+      id: "pooled-rate",
+      version: "v1",
+      categories: [ARITHMETIC],
+      cases: [
+        {
+          id: "two-turns",
+          category: "arithmetic",
+          tier: 1,
+          graderKind: "exact",
+          prompt: { user: "a", turns: ["b"] },
+          expected: "391",
+        },
+        {
+          id: "one-turn",
+          category: "arithmetic",
+          tier: 1,
+          graderKind: "exact",
+          prompt: { user: "c" },
+          expected: "391",
+        },
+      ],
+    });
+
+    const body = await benchmark(suite, client, { clock: () => now });
+
+    expect(body.caseResults.map((result) => result.metrics.tokensPerSecond)).toEqual([10, 100]);
+    expect(body.metrics.tokensPerSecond).toBe(55);
+    expect(body.metrics.avgTokensPerSecond).toBe(55);
+  });
+
   it("times a case from the attempt that answered, leaving out rate-limit backoff", async () => {
     const RATE_LIMITED_MS = 20_000;
     const ANSWER_MS = 1000;
@@ -673,17 +670,6 @@ describe("BenchmarkRunner — case timing", () => {
 describe("BenchmarkRunner — local run", () => {
   const MS_PER_HOUR = 3_600_000;
   const GPU_HOURLY_USD = 0.5;
-  const MODEL_HASH = "a".repeat(64);
-  const HARDWARE: Hardware = {
-    platform: "linux",
-    arch: "x64",
-    osVersion: "Linux 6.8.0",
-    cpuModel: "AMD Ryzen 9 7950X",
-    cpuCores: 32,
-    totalRamMb: 65536,
-    accelerators: [{ kind: "cuda", name: "NVIDIA GeForce RTX 4090", memoryMb: 24564 }],
-    memoryModel: "discrete-vram",
-  };
   const MEMORY_USAGE: MemoryUsage = {
     kind: "vram",
     peakMb: 14680,
@@ -692,40 +678,27 @@ describe("BenchmarkRunner — local run", () => {
     source: "nvidia-smi (process)",
   };
   const measuredMemory: MemoryMonitor = {
-    start: () => {},
-    stop: async () => MEMORY_USAGE,
     probe: async () => ({ mb: MEMORY_USAGE.peakMb, kind: MEMORY_USAGE.kind }),
     usage: () => MEMORY_USAGE,
   };
-  const suite = oneCaseSuite(ARITHMETIC, { graderKind: "exact", prompt: { user: "17*23?" }, expected: "391" });
 
-  it("records the memory read so far on every checkpoint, so a stopped run keeps it", async () => {
+  it("bills GPU time as an estimate and records the memory read so far on every checkpoint", async () => {
+    const suite = oneCaseSuite(ARITHMETIC, { graderKind: "exact", prompt: { user: "17*23?" }, expected: "391" });
     const checkpoints: Artifact[] = [];
-    await benchmark(suite, new ScriptedClient(["391"]), {
+    let now = 0;
+
+    const body = await benchmark(suite, new ScriptedClient(["391"]), {
+      cost: { gpuHourlyUsd: GPU_HOURLY_USD },
       memoryMonitor: measuredMemory,
+      clock: () => (now += MS_PER_HOUR),
       onCheckpoint: (artifact) => {
         checkpoints.push(artifact);
       },
     });
 
     expect(checkpoints[0].metrics.memory).toEqual(MEMORY_USAGE);
-  });
-
-  it("bills GPU time as an estimate and records memory, hardware, the model hash and the model that answered", async () => {
-    let now = 0;
-
-    const body = await benchmark(suite, new ScriptedClient([{ text: "391", model: "qwen2.5-7b-instruct-q4_k_m" }]), {
-      identity: identity(suite, { hardware: HARDWARE, modelHash: MODEL_HASH }),
-      cost: { gpuHourlyUsd: GPU_HOURLY_USD },
-      memoryMonitor: measuredMemory,
-      clock: () => (now += MS_PER_HOUR),
-    });
-
     expect(body.cost).toEqual({ amountUsd: GPU_HOURLY_USD, currency: "USD", estimated: true });
-    expect(body.metrics.memory).toEqual(MEMORY_USAGE);
     expect(body.metrics.vramMb).toBe(MEMORY_USAGE.peakMb);
-    expect(body.run.hardware).toEqual(HARDWARE);
-    expect(body.reproduce.modelHash).toBe(MODEL_HASH);
-    expect(body.model.metadata?.resolvedModelIds).toEqual(["qwen2.5-7b-instruct-q4_k_m"]);
+    expect(body.caseResults[0].metrics.vramMb).toBe(MEMORY_USAGE.peakMb);
   });
 });

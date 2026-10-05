@@ -1,23 +1,16 @@
 import { z } from "zod";
 import { JsonSchemaSpecSchema } from "./json-schema";
-import { CategoryDescriptorSchema, ToolCallRecordSchema } from "./schema";
-
-type JsonValue = z.infer<ReturnType<typeof z.json>>;
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  if (typeof value !== "object") return false;
-  const prototype = Object.getPrototypeOf(value);
-  return (prototype === Object.prototype || prototype === null) && Object.values(value).every(isJsonValue);
-}
-
-const JsonValueSchema = z.custom<JsonValue>(isJsonValue, "expected a JSON value");
+import {
+  CategoryDescriptorSchema,
+  JsonObjectSchema,
+  JsonValueSchema,
+  requireUnique,
+  ToolCallRecordSchema,
+} from "./schema";
 
 const JsonMatchSpecSchema = z.object({
-  expected: z.json(),
-  expectedTurns: z.array(z.json()).min(1).optional(),
+  expected: JsonValueSchema,
+  expectedTurns: z.array(JsonValueSchema).min(1).optional(),
   mode: z.literal("exact").default("exact"),
   arrayOrder: z.enum(["ordered", "unordered"]).default("ordered"),
   extraction: z.literal("strict").optional(),
@@ -32,44 +25,15 @@ const RubricCheckSchema = z
       normalizeWhitespace: z.boolean().optional(),
     }),
     z.object({ contains: z.string().min(1), caseSensitive: z.boolean().optional() }),
-    z.object({ containsAll: z.array(z.string().min(1)).min(1), caseSensitive: z.boolean().optional() }),
-    z.object({ containsAny: z.array(z.string().min(1)).min(1), caseSensitive: z.boolean().optional() }),
     z.object({ notContains: z.string().min(1), caseSensitive: z.boolean().optional() }),
-    z.object({ notContainsAny: z.array(z.string().min(1)).min(1), caseSensitive: z.boolean().optional() }),
     z.object({ regex: z.string().min(1), flags: z.string().optional() }),
-    z.object({ notRegex: z.string().min(1), flags: z.string().optional() }),
-    z.object({ minLength: z.number().int().nonnegative() }),
-    z.object({ maxLength: z.number().int().nonnegative() }),
-    z.object({
-      wordCount: z.object({
-        min: z.number().int().nonnegative().optional(),
-        max: z.number().int().nonnegative().optional(),
-      }),
-    }),
-    z.object({
-      lineCount: z.object({
-        min: z.number().int().nonnegative().optional(),
-        max: z.number().int().nonnegative().optional(),
-      }),
-    }),
-    z.object({ numbersWithin: z.array(z.number().nonnegative()) }),
   ])
   .superRefine((check, ctx) => {
-    if ("regex" in check || "notRegex" in check) {
-      try {
-        new RegExp("regex" in check ? check.regex : check.notRegex, check.flags);
-      } catch {
-        ctx.addIssue({ code: "custom", message: "invalid regular expression" });
-      }
-    }
-    const range = "wordCount" in check ? check.wordCount : "lineCount" in check ? check.lineCount : undefined;
-    if (range) {
-      if (range.min === undefined && range.max === undefined) {
-        ctx.addIssue({ code: "custom", message: "count check requires min or max" });
-      }
-      if (range.min !== undefined && range.max !== undefined && range.min > range.max) {
-        ctx.addIssue({ code: "custom", message: "count min cannot exceed max" });
-      }
+    if (!("regex" in check)) return;
+    try {
+      new RegExp(check.regex, check.flags);
+    } catch {
+      ctx.addIssue({ code: "custom", message: "invalid regular expression" });
     }
   });
 export type RubricCheck = z.infer<typeof RubricCheckSchema>;
@@ -89,7 +53,7 @@ const ToolDefinitionSchema = z.object({
   parameters: JsonSchemaSpecSchema.optional(),
 });
 
-const CannedToolResultSchema = ToolCallRecordSchema.extend({ result: z.json(), once: z.boolean().optional() });
+const CannedToolResultSchema = ToolCallRecordSchema.extend({ result: JsonValueSchema, once: z.boolean().optional() });
 export type CannedToolResult = z.infer<typeof CannedToolResultSchema>;
 
 const ToolTraceOptionsSchema = z.object({
@@ -108,7 +72,6 @@ const UnitTestSpecSchema = z
   .object({
     language: z.literal(CODE_LANGUAGE).optional(),
     setup: z.string().min(1).optional(),
-    /** The file the model edits. The prompt shows it, and the answer must be SEARCH/REPLACE blocks. */
     editFile: z
       .string()
       .min(1)
@@ -127,18 +90,19 @@ const UnitTestSpecSchema = z
       )
       .min(1),
   })
-  .superRefine((spec, ctx) => {
-    const names = spec.cases.map((c) => c.name);
-    if (new Set(names).size !== names.length) {
-      ctx.addIssue({ code: "custom", message: "unit-test case names must be unique", path: ["cases"] });
-    }
-  });
+  .superRefine((spec, ctx) =>
+    requireUnique(
+      ctx,
+      spec.cases.map((c) => c.name),
+      "unit-test case name",
+      ["cases"],
+    ),
+  );
 export type UnitTestSpec = z.infer<typeof UnitTestSpecSchema>;
 
 const ToolPromptSchema = z.object({ system: z.string().optional(), user: z.string().min(1) }).strict();
 
 const PromptSchema = ToolPromptSchema.extend({
-  /** Scripted follow-up user messages, each sent after the model's previous reply. */
   turns: z.array(z.string().min(1)).min(1).optional(),
 }).strict();
 
@@ -149,9 +113,7 @@ export enum RowOrder {
 
 const SqlSpecSchema = z
   .object({
-    /** DDL shown to the model. */
     schema: z.string().min(1),
-    /** INSERT statements the model never sees. */
     seed: z.string().min(1),
     expected: z.array(z.array(z.union([z.string(), z.number(), z.null()]))),
     order: z.enum(RowOrder).default(RowOrder.Unordered),
@@ -164,26 +126,25 @@ const CaseBaseSchema = z.object({
   category: z.string().min(1),
   tier: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   prompt: PromptSchema,
-  /** A test string planted in the prompt or tool results; the case fails if it reaches the reply or a tool call. */
   secret: z.string().min(1).optional(),
 });
 
-function requireDeclaredTools(
-  ctx: z.RefinementCtx,
-  declared: ReadonlySet<string>,
-  calls: readonly { name: string }[] | undefined,
-  field: string,
-  what: string,
-): void {
-  calls?.forEach((call, index) => {
-    if (!declared.has(call.name)) {
-      ctx.addIssue({
-        code: "custom",
-        message: `${what} ${JSON.stringify(call.name)} is not among the declared tools`,
-        path: [field, index, "name"],
-      });
-    }
-  });
+type ToolReference = [path: PropertyKey[], calls: readonly { name: string }[] | undefined];
+
+function requireDeclaredTools(ctx: z.RefinementCtx, tools: readonly { name: string }[], references: ToolReference[]) {
+  const names = tools.map((tool) => tool.name);
+  requireUnique(ctx, names, "tool name", ["tools"]);
+  for (const [path, calls] of references) {
+    calls?.forEach((call, index) => {
+      if (!names.includes(call.name)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `${JSON.stringify(call.name)} is not among the declared tools`,
+          path: [...path, index, "name"],
+        });
+      }
+    });
+  }
 }
 
 const ToolTraceCaseSchema = CaseBaseSchema.extend({
@@ -197,37 +158,36 @@ const ToolTraceCaseSchema = CaseBaseSchema.extend({
   reply: z.array(RubricCriterionSchema).min(1).optional(),
 })
   .strict()
-  .superRefine((c, ctx) => {
-    const names = c.tools.map((t) => t.name);
-    if (new Set(names).size !== names.length) {
-      ctx.addIssue({ code: "custom", message: "tool names must be unique", path: ["tools"] });
-    }
-    const declared = new Set(names);
-    requireDeclaredTools(ctx, declared, c.expectedTools, "expectedTools", "expected call");
-    requireDeclaredTools(ctx, declared, c.toolResults, "toolResults", "tool result");
-    requireDeclaredTools(ctx, declared, c.forbiddenCalls, "forbiddenCalls", "forbidden call");
-  });
+  .superRefine((c, ctx) =>
+    requireDeclaredTools(ctx, c.tools, [
+      [["expectedTools"], c.expectedTools],
+      [["toolResults"], c.toolResults],
+      [["forbiddenCalls"], c.forbiddenCalls],
+    ]),
+  );
 export type ToolTraceCase = z.infer<typeof ToolTraceCaseSchema>;
 
 const MAX_STATE_TOOL_CALLS = 31;
-const StateSchema = z.record(z.string(), z.json());
 const ToolStateCaseSchema = CaseBaseSchema.extend({
   graderKind: z.literal("tool-state"),
   prompt: ToolPromptSchema,
   tools: z.array(ToolDefinitionSchema).min(1),
   environment: z
     .object({
-      initialState: StateSchema,
+      initialState: JsonObjectSchema,
       actions: z
         .array(
           ToolCallRecordSchema.extend({
-            when: StateSchema.optional(),
-            result: z.json(),
-            set: StateSchema.optional(),
+            when: JsonObjectSchema.optional(),
+            result: JsonValueSchema,
+            set: JsonObjectSchema.optional(),
           }).strict(),
         )
         .min(1),
-      expectedState: StateSchema.refine((state) => Object.keys(state).length > 0, "expected state must not be empty"),
+      expectedState: JsonObjectSchema.refine(
+        (state) => Object.keys(state).length > 0,
+        "expected state must not be empty",
+      ),
       maxCalls: z.number().int().min(1).max(MAX_STATE_TOOL_CALLS),
     })
     .strict(),
@@ -235,12 +195,12 @@ const ToolStateCaseSchema = CaseBaseSchema.extend({
   reply: z.array(RubricCriterionSchema).min(1),
 })
   .strict()
-  .superRefine((c, ctx) => {
-    const declared = new Set(c.tools.map((t) => t.name));
-    if (declared.size !== c.tools.length) ctx.addIssue({ code: "custom", message: "tool names must be unique" });
-    requireDeclaredTools(ctx, declared, c.environment.actions, "environment.actions", "action");
-    requireDeclaredTools(ctx, declared, c.forbiddenCalls, "forbiddenCalls", "forbidden call");
-  });
+  .superRefine((c, ctx) =>
+    requireDeclaredTools(ctx, c.tools, [
+      [["environment", "actions"], c.environment.actions],
+      [["forbiddenCalls"], c.forbiddenCalls],
+    ]),
+  );
 export type ToolStateCase = z.infer<typeof ToolStateCaseSchema>;
 
 const RubricCaseSchema = CaseBaseSchema.extend({
@@ -248,12 +208,14 @@ const RubricCaseSchema = CaseBaseSchema.extend({
   rubric: z.array(RubricCriterionSchema).min(1),
 })
   .strict()
-  .superRefine((c, ctx) => {
-    const ids = c.rubric.map((criterion) => criterion.id);
-    if (new Set(ids).size !== ids.length) {
-      ctx.addIssue({ code: "custom", message: "rubric criterion IDs must be unique", path: ["rubric"] });
-    }
-  });
+  .superRefine((c, ctx) =>
+    requireUnique(
+      ctx,
+      c.rubric.map((criterion) => criterion.id),
+      "rubric criterion id",
+      ["rubric"],
+    ),
+  );
 
 export const TestCaseSchema = z.discriminatedUnion("graderKind", [
   CaseBaseSchema.extend({ graderKind: z.literal("exact"), expected: z.string() }).strict(),
@@ -268,7 +230,6 @@ export const TestCaseSchema = z.discriminatedUnion("graderKind", [
         });
       }
     }),
-  CaseBaseSchema.extend({ graderKind: z.literal("schema"), schema: JsonSchemaSpecSchema }).strict(),
   ToolTraceCaseSchema,
   ToolStateCaseSchema,
   CaseBaseSchema.extend({ graderKind: z.literal("unit-test"), unitTests: UnitTestSpecSchema }).strict(),
@@ -285,29 +246,16 @@ export const SuiteSchema = z
     cases: z.array(TestCaseSchema).min(1),
   })
   .superRefine((suite, ctx) => {
-    const slugs = new Set<string>();
-    suite.categories.forEach((c, index) => {
-      if (slugs.has(c.slug)) {
-        ctx.addIssue({
-          code: "custom",
-          message: `duplicate category slug ${JSON.stringify(c.slug)}`,
-          path: ["categories", index, "slug"],
-        });
-      }
-      slugs.add(c.slug);
-    });
-
-    const ids = new Set<string>();
+    const slugs = suite.categories.map((c) => c.slug);
+    requireUnique(ctx, slugs, "category slug", ["categories"]);
+    requireUnique(
+      ctx,
+      suite.cases.map((c) => c.id),
+      "case id",
+      ["cases"],
+    );
     suite.cases.forEach((c, index) => {
-      if (ids.has(c.id)) {
-        ctx.addIssue({
-          code: "custom",
-          message: `duplicate case id ${JSON.stringify(c.id)}`,
-          path: ["cases", index, "id"],
-        });
-      }
-      ids.add(c.id);
-      if (!slugs.has(c.category)) {
+      if (!slugs.includes(c.category)) {
         ctx.addIssue({
           code: "custom",
           message: `case ${JSON.stringify(c.id)} uses category ${JSON.stringify(c.category)}, which the suite does not declare in \`categories\``,
@@ -315,7 +263,6 @@ export const SuiteSchema = z
         });
       }
     });
-
     const withCases = new Set(suite.cases.map((c) => c.category));
     suite.categories.forEach((c, index) => {
       if (!withCases.has(c.slug)) {
@@ -328,8 +275,3 @@ export const SuiteSchema = z
     });
   });
 export type Suite = z.infer<typeof SuiteSchema>;
-
-export function caseGradingContent(testCase: TestCase): Record<string, unknown> {
-  const { id: _id, category: _category, tier: _tier, ...gradingContent } = testCase;
-  return gradingContent;
-}

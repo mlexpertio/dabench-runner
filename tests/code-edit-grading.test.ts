@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { grade } from "dabench/engine/grader";
-import { TestCaseSchema, type TestCase } from "dabench/engine/suite";
+import { grade } from "../src/engine/grader";
+import { TestCaseSchema, type TestCase } from "../src/engine/suite";
 
 const FILE = [
   "function total(items) {",
@@ -43,22 +43,6 @@ const editCase: TestCase = TestCaseSchema.parse({
 const block = (search: string, replace: string) => `<<<<<<< SEARCH\n${search}=======\n${replace}>>>>>>> REPLACE`;
 
 describe("Grader — code edits as SEARCH/REPLACE blocks", () => {
-  it("passes prototype-named keys to candidate code as own JSON data", async () => {
-    const value = JSON.parse('{"__proto__":{"x":1},"constructor":7}');
-    const task = TestCaseSchema.parse({
-      id: "json-own-keys",
-      category: "coding",
-      tier: 2,
-      graderKind: "unit-test",
-      prompt: { user: "Return the input unchanged." },
-      unitTests: { entry: "solve", cases: [{ name: "own-key", args: [value], expected: value }] },
-    });
-    expect((await grade(task, { text: "function solve(value) { return value; }" })).score).toBe(100);
-    expect((await grade(task, { text: "function solve(value) { delete value.__proto__; return value; }" })).score).toBe(
-      0,
-    );
-  });
-
   it("applies the blocks in order, then runs the hidden tests on the edited file", async () => {
     const answer = [
       "Here's the fix:",

@@ -2,7 +2,6 @@ import { canonicalize } from "./canonical";
 import type { ToolCallRecord } from "./schema";
 import type { ToolTraceOptions } from "./suite";
 
-/** A call matches a rule with the same name whose args it contains, or, under exact matching, equals. */
 export function callMatches(
   rule: ToolCallRecord,
   call: ToolCallRecord,

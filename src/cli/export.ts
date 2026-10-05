@@ -1,6 +1,6 @@
 import { isPassed } from "../engine/aggregator";
 import { ArtifactSchema, type Artifact, type CaseResult } from "../engine/schema";
-import { fail, readJsonFile, requireFlag, stringFlag, type Flags } from "./args";
+import { enumFlag, fail, readJsonFile, requireFlag, type Flags } from "./args";
 
 export enum ExportFlag {
   Artifact = "artifact",
@@ -21,20 +21,13 @@ const LINE_END = "\n";
 
 export function cmdExport(flags: Flags): void {
   const path = requireFlag(flags, ExportFlag.Artifact);
-  const format = exportFormat(flags);
+  const format = enumFlag(flags, ExportFlag.Format, ExportFormat) ?? ExportFormat.Csv;
   process.stdout.write(exportCases(readArtifact(path), format));
 }
 
 export function exportCases(run: ExportedRun, format: ExportFormat): string {
   const rows = run.caseResults.map((result) => caseRow(run, result));
   return format === ExportFormat.Csv ? toCsv(rows) : toJsonLines(rows);
-}
-
-function exportFormat(flags: Flags): ExportFormat {
-  const requested = stringFlag(flags, ExportFlag.Format) ?? ExportFormat.Csv;
-  const format = Object.values(ExportFormat).find((known) => known === requested);
-  if (!format) fail(`--${ExportFlag.Format} must be one of: ${Object.values(ExportFormat).join(", ")}`);
-  return format;
 }
 
 function readArtifact(path: string): Artifact {

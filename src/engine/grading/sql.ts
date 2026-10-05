@@ -19,7 +19,6 @@ export async function gradeSql(spec: SqlSpec, answer: string): Promise<Grading> 
   };
 }
 
-/** The query in the last fenced block, or the whole answer, without a trailing semicolon. */
 function extractSql(answer: string): string {
   return (fencedBlocks(answer).at(-1) ?? answer).trim().replace(/;\s*$/u, "");
 }

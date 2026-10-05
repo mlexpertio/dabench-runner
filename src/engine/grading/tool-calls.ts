@@ -1,26 +1,19 @@
 import { canonicalize } from "../canonical";
-import { callArguments, type ToolCall } from "../client";
 import type { ToolCallRecord } from "../schema";
-import { DEFAULT_TOOL_TRACE_OPTIONS, type ToolTraceCase, type ToolTraceOptions } from "../suite";
+import type { ToolTraceOptions } from "../suite";
 import { callMatches, isDeepSubset } from "../tool-match";
-import { withReplyChecks } from "./rubric";
 import { assertion, failedGate, FULL_QUALITY, previewJson, WIDE_PREVIEW_CHARS, type Grading } from "./verdict";
 
 const TOOL_CALLS_MADE = "tool-calls-made";
 const CALL_COUNT = "call-count";
 
-export function gradeToolCase(testCase: ToolTraceCase, answer: string, toolCalls: ToolCall[] | undefined): Grading {
-  const trace = gradeTooltrace(testCase.expectedTools, testCase.toolOptions ?? DEFAULT_TOOL_TRACE_OPTIONS, toolCalls);
-  return withReplyChecks(withForbiddenCalls(trace, testCase.forbiddenCalls, toolCalls), testCase.reply, answer);
-}
-
-function gradeTooltrace(
+export function gradeTooltrace(
   expected: ToolCallRecord[],
   options: ToolTraceOptions,
-  actual: ToolCallRecord[] | undefined,
+  actual: ToolCallRecord[],
 ): Grading {
-  if (expected.length === 0) return gradeNoCall(actual ?? []);
-  if (!actual || actual.length === 0) {
+  if (expected.length === 0) return gradeNoCall(actual);
+  if (actual.length === 0) {
     return failedGate(
       TOOL_CALLS_MADE,
       "no native tool calls in the response",
@@ -30,7 +23,7 @@ function gradeTooltrace(
   }
   const assertions = [assertion(TOOL_CALLS_MADE, true)];
 
-  const pairings = matchCallsAligned(expected, actual, options);
+  const pairings = longestInOrderPairing(expected, actual, options);
   const matched = pairings.filter((i) => i >= 0).length;
   const unmatchedActual = actual.filter((_, i) => !pairings.includes(i));
 
@@ -94,8 +87,11 @@ function argsDiff(
   return problems.length > 0 ? `arguments differ: ${problems.join("; ")}` : "arguments do not match";
 }
 
-/** The longest in-order pairing of expected calls to actual ones; -1 marks an expected call left unpaired. */
-function matchCallsAligned(expected: ToolCallRecord[], actual: ToolCallRecord[], options: ToolTraceOptions): number[] {
+function longestInOrderPairing(
+  expected: ToolCallRecord[],
+  actual: ToolCallRecord[],
+  options: ToolTraceOptions,
+): number[] {
   const matches = (i: number, j: number) => callMatches(expected[i], actual[j], options.argumentMatch);
   const n = expected.length;
   const m = actual.length;
@@ -121,21 +117,4 @@ function matchCallsAligned(expected: ToolCallRecord[], actual: ToolCallRecord[],
     }
   }
   return pairings;
-}
-
-function withForbiddenCalls(
-  grading: Grading,
-  forbidden: ToolCallRecord[] | undefined,
-  toolCalls: ToolCall[] | undefined,
-): Grading {
-  if (!forbidden) return grading;
-  const checks = forbidden.map((rule) => {
-    const made = toolCalls?.find((call) => callMatches(rule, call));
-    return assertion(`forbidden: ${rule.name}`, !made, made && `called with ${callArguments(made)}`);
-  });
-  return {
-    ...grading,
-    correctness: checks.every((check) => check.passed) ? grading.correctness : 0,
-    assertions: [...grading.assertions, ...checks],
-  };
 }

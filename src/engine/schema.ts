@@ -1,9 +1,33 @@
 import { z } from "zod";
-import { Deployment } from "./deployment";
-import { CaseSubset } from "./subset";
+import { isJsonObject, isJsonValue, type JsonObject, type JsonValue } from "./guards";
 
 export const ARTIFACT_SCHEMA_VERSION = "1.0.0" as const;
 export const ENGINE_VERSION = "1.0.0";
+
+export enum Deployment {
+  Hosted = "hosted",
+  Local = "local",
+}
+
+export enum CaseSubset {
+  QuantImpact = "quant-impact",
+}
+
+export const JsonValueSchema = z.custom<JsonValue>(isJsonValue, "expected a JSON value");
+export const JsonObjectSchema = z.custom<JsonObject>(isJsonObject, "expected a JSON object");
+
+export function requireUnique(
+  ctx: z.RefinementCtx,
+  values: readonly string[],
+  what: string,
+  path: PropertyKey[],
+): void {
+  values.forEach((value, index) => {
+    if (values.indexOf(value) !== index) {
+      ctx.addIssue({ code: "custom", message: `duplicate ${what} ${JSON.stringify(value)}`, path: [...path, index] });
+    }
+  });
+}
 
 export const Sha256HexSchema = z
   .string()
@@ -46,7 +70,7 @@ export type CaseMetrics = z.infer<typeof CaseMetricsSchema>;
 
 export const ToolCallRecordSchema = z.object({
   name: z.string().min(1),
-  args: z.record(z.string(), z.unknown()).optional(),
+  args: JsonObjectSchema.optional(),
 });
 export type ToolCallRecord = z.infer<typeof ToolCallRecordSchema>;
 
@@ -133,7 +157,6 @@ const ModelConfigSchema = z.object({
   contextWindow: z.number().int().positive().nullable(),
   temperature: z.number().nullable(),
   mtp: z.boolean().nullable(),
-  nativeJsonSchema: z.boolean().optional(),
   providerParameters: z.record(z.string(), z.json()).optional(),
 });
 export type ModelConfig = z.infer<typeof ModelConfigSchema>;

@@ -1,15 +1,15 @@
-import { BYTES_PER_MB, round2 } from "./calc";
-import { isLoopbackHost } from "./deployment";
+import { BYTES_PER_MB, round2 } from "../engine/calc";
+import { isJsonObject, type JsonObject } from "../engine/guards";
+import { Harness, knownHarness } from "../engine/harness";
+import { endpointRoots, fetchJson } from "../engine/provider-http";
+import type { MemoryMonitor } from "../engine/runner";
+import type { MemoryKind, MemoryUsage } from "../engine/schema";
 import { defaultExec, outputLines, sumNumericLines, type Exec } from "./exec";
-import { isJsonObject, type JsonObject } from "./guards";
-import { Harness, knownHarness } from "./harness";
-import { endpointRoots, fetchJson } from "./provider-http";
-import type { MemoryKind, MemoryUsage } from "./schema";
 
-const SAMPLE_INTERVAL_MS = 1000;
 const KB_PER_MB = 1024;
 const DEFAULT_HTTP_PORT = 80;
 const DEFAULT_HTTPS_PORT = 443;
+const HTTPS_PROTOCOL = "https:";
 
 interface MemorySample {
   mb: number;
@@ -153,42 +153,15 @@ function processRssProbe(pids: PortPidResolver, kind: MemoryKind, exec: Exec): M
   };
 }
 
-export interface MemoryMonitor {
-  start(): void;
-  stop(): Promise<MemoryUsage | null>;
-  probe(): Promise<MemorySample | null>;
-  /** The readings taken so far. */
-  usage(): MemoryUsage | null;
-}
-
-class PollingMemoryMonitor implements MemoryMonitor {
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private inFlight: Promise<void> | null = null;
+class ProbingMemoryMonitor implements MemoryMonitor {
   private peak: (MemorySample & { source: string }) | null = null;
   private sumMb = 0;
   private samples = 0;
 
   constructor(private readonly probes: MemoryProbe[]) {}
 
-  start(): void {
-    if (this.timer || this.probes.length === 0) return;
-    this.tick();
-    this.timer = setInterval(() => this.tick(), SAMPLE_INTERVAL_MS);
-    this.timer.unref?.();
-  }
-
-  async stop(): Promise<MemoryUsage | null> {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    if (this.inFlight) await this.inFlight;
-    await this.sampleOnce();
-    return this.usage();
-  }
-
   usage(): MemoryUsage | null {
-    if (!this.peak || this.samples === 0) return null;
+    if (!this.peak) return null;
     return {
       kind: this.peak.kind,
       peakMb: Math.round(this.peak.mb),
@@ -199,28 +172,12 @@ class PollingMemoryMonitor implements MemoryMonitor {
   }
 
   async probe(): Promise<MemorySample | null> {
-    if (this.inFlight) await this.inFlight;
-    return this.sampleOnce();
-  }
-
-  private tick(): void {
-    if (this.inFlight) return;
-    this.inFlight = this.sampleOnce()
-      .then(() => undefined)
-      .finally(() => {
-        this.inFlight = null;
-      });
-  }
-
-  private async sampleOnce(): Promise<MemorySample | null> {
     for (const probe of this.probes) {
       const sample = await probe.sample().catch(() => null);
       if (sample && sample.mb > 0) {
         this.samples++;
         this.sumMb += sample.mb;
-        if (!this.peak || sample.mb > this.peak.mb) {
-          this.peak = { ...sample, source: probe.source };
-        }
+        if (!this.peak || sample.mb > this.peak.mb) this.peak = { ...sample, source: probe.source };
         return sample;
       }
     }
@@ -231,55 +188,38 @@ class PollingMemoryMonitor implements MemoryMonitor {
 interface LocalMemoryMonitorOptions {
   harness: string;
   modelId: string;
-  baseUrl?: string;
+  server: URL;
   platform?: NodeJS.Platform;
   exec?: Exec;
   fetchImpl?: typeof fetch;
 }
 
-/** Samples the serving process's memory with the most precise probe that works for its harness and platform. */
 export function createLocalMemoryMonitor(opts: LocalMemoryMonitorOptions): MemoryMonitor {
-  return new PollingMemoryMonitor(localMemoryProbes(opts));
+  return new ProbingMemoryMonitor(mostPreciseProbesFirst(opts));
 }
 
-/** The probes to try, most precise first, for the harness serving the model and the platform it runs on. */
-function localMemoryProbes(opts: LocalMemoryMonitorOptions): MemoryProbe[] {
-  const platform = opts.platform ?? process.platform;
-  const exec = opts.exec ?? defaultExec;
-  const port = loopbackPort(opts.baseUrl);
-  const pids = port !== null ? new PortPidResolver(port, exec) : null;
-  const hostKind: MemoryKind = platform === "darwin" ? "unified-ram" : "system-ram";
-
-  const probes: MemoryProbe[] = [];
-  if (knownHarness(opts.harness) === Harness.Ollama && opts.baseUrl) {
-    probes.push(
-      ollamaPsProbe({
-        baseUrl: opts.baseUrl,
-        modelId: opts.modelId,
-        gpuKind: platform === "darwin" ? "unified-ram" : "vram",
-        fetchImpl: opts.fetchImpl,
-      }),
-    );
-  }
-  if (!pids) return probes;
-  if (platform !== "darwin") probes.push(nvidiaSmiProcessProbe(pids, exec), nvidiaSmiTotalProbe(exec));
-  probes.push(processRssProbe(pids, hostKind, exec));
-  return probes;
+function mostPreciseProbesFirst({
+  harness,
+  modelId,
+  server,
+  platform = process.platform,
+  exec = defaultExec,
+  fetchImpl,
+}: LocalMemoryMonitorOptions): MemoryProbe[] {
+  const onMac = platform === "darwin";
+  const pids = new PortPidResolver(serverPort(server), exec);
+  return [
+    ...(knownHarness(harness) === Harness.Ollama
+      ? [ollamaPsProbe({ baseUrl: server.href, modelId, gpuKind: onMac ? "unified-ram" : "vram", fetchImpl })]
+      : []),
+    ...(onMac ? [] : [nvidiaSmiProcessProbe(pids, exec), nvidiaSmiTotalProbe(exec)]),
+    processRssProbe(pids, onMac ? "unified-ram" : "system-ram", exec),
+  ];
 }
 
-/** The port of a server on this machine; null for any other host, whose memory this machine can't see. */
-function loopbackPort(baseUrl?: string): number | null {
-  if (!baseUrl) return null;
-  try {
-    const url = new URL(baseUrl);
-    if (!isLoopbackHost(url.hostname)) return null;
-    if (url.port) return Number(url.port);
-    if (url.protocol === "http:") return DEFAULT_HTTP_PORT;
-    if (url.protocol === "https:") return DEFAULT_HTTPS_PORT;
-    return null;
-  } catch {
-    return null;
-  }
+function serverPort(server: URL): number {
+  if (server.port) return Number(server.port);
+  return server.protocol === HTTPS_PROTOCOL ? DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
 }
 
 function bytes(value: unknown): number {

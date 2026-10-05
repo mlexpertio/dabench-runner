@@ -1,21 +1,18 @@
-import { ENGINE_VERSION } from "../engine/schema";
-import { ServiceTier } from "../engine/service-tier";
-import { CliError, fail, flagList, parseArgs, unknownFlags } from "./args";
+import packageJson from "../../package.json" with { type: "json" };
+import type { RunStore } from "../engine/artifact";
+import { Harness } from "../engine/harness";
+import { ServiceTier } from "../engine/openrouter-endpoints";
+import { CliError, fail, flagList, parseArgs, unknownFlags, type Flags } from "./args";
 import { cmdExport, ExportFlag, ExportFormat } from "./export";
 import { cmdInit, InitFlag } from "./init";
 import { unsupportedNodeMessage } from "./invocation";
 import { loadEnv } from "./load-env";
-import { PROVIDER_NAMES } from "./providers";
 import { cmdRun } from "./run";
-import { RUN_FLAGS } from "./run-inputs";
-import type { RunStore } from "./run-store";
+import { runFlags } from "./run-inputs";
 import { cmdValidate, ValidateFlag } from "./validate";
 
-/** The help and init sentences that depend on where a CLI records its runs. */
 interface HelpNotes {
   init: string;
-  name: string;
-  scope: string;
   storage: string;
 }
 
@@ -27,13 +24,8 @@ export interface CliHost {
 
 export const PUBLIC_NOTES: HelpNotes = {
   init: "each run writes an artifact JSON file under artifacts/",
-  name: "--name sets the display name recorded in the artifact.",
-  scope: `--category limits execution to one or more comma-separated suite categories.
---subset quant-impact marks a full local-model run as a footprint build.`,
   storage: `Every run writes an artifact JSON file, by default under artifacts/. Pass
---out to choose its path. The CLI updates the file after each case. The public
-CLI starts a new run each time; --fresh only applies to the DaBench app's
-database CLI.`,
+--out to choose its path. The CLI updates the file after each case.`,
 };
 
 enum Command {
@@ -43,14 +35,18 @@ enum Command {
   Export = "export",
 }
 
-const COMMAND_FLAGS: Record<Command, readonly string[]> = {
-  [Command.Init]: Object.values(InitFlag),
-  [Command.Validate]: Object.values(ValidateFlag),
-  [Command.Run]: RUN_FLAGS,
-  [Command.Export]: Object.values(ExportFlag),
+interface CommandSpec {
+  flags: (host: CliHost) => readonly string[];
+  run: (flags: Flags, host: CliHost) => void | Promise<void>;
+}
+
+const COMMANDS: Record<Command, CommandSpec> = {
+  [Command.Init]: { flags: () => Object.values(InitFlag), run: cmdInit },
+  [Command.Validate]: { flags: () => Object.values(ValidateFlag), run: cmdValidate },
+  [Command.Run]: { flags: (host) => runFlags(host.store !== undefined), run: cmdRun },
+  [Command.Export]: { flags: () => Object.values(ExportFlag), run: cmdExport },
 };
 
-const COMMANDS: readonly string[] = Object.values(Command);
 const ARGV_FIRST_ARGUMENT = 2;
 const RUN_INDENT_EXTRA = 2;
 
@@ -66,41 +62,29 @@ async function dispatch(host: CliHost): Promise<void> {
   const unsupported = unsupportedNodeMessage(process.versions.node);
   if (unsupported) fail(unsupported);
   loadEnv();
-  const [command, ...rest] = process.argv.slice(ARGV_FIRST_ARGUMENT);
-  if (!isCommand(command)) {
+  const [name, ...rest] = process.argv.slice(ARGV_FIRST_ARGUMENT);
+  const command = Object.values(Command).find((known) => known === name);
+  if (!command) {
     printUsage(host);
-    process.exitCode = command ? 1 : 0;
+    process.exitCode = name ? 1 : 0;
     return;
   }
   const flags = parseArgs(rest);
-  const unknown = unknownFlags(flags, COMMAND_FLAGS[command]);
+  const { flags: known, run } = COMMANDS[command];
+  const unknown = unknownFlags(flags, known(host));
   if (unknown.length > 0) fail(`unknown flag ${flagList(unknown)} for ${command}`);
-
-  switch (command) {
-    case Command.Init:
-      return cmdInit(flags, host);
-    case Command.Validate:
-      return cmdValidate(flags);
-    case Command.Run:
-      return cmdRun(flags, host);
-    case Command.Export:
-      return cmdExport(flags);
-  }
-}
-
-function isCommand(value: string | undefined): value is Command {
-  return value !== undefined && COMMANDS.includes(value);
+  return run(flags, host);
 }
 
 function printUsage({ command, notes }: CliHost): void {
   const runOptions = `${command} run `;
   const indent = " ".repeat(runOptions.length + RUN_INDENT_EXTRA);
-  console.error(`DaBench engine v${ENGINE_VERSION}
+  console.error(`${packageJson.name} v${packageJson.version}
 
 Quick start:
   ${command} init [--dir <dir>]
   ${command} validate --suite <suite.json>
-  ${command} run --suite <suite.json> --provider <${PROVIDER_NAMES.join("|")}> --model <id>
+  ${command} run --suite <suite.json> --provider <${Object.values(Harness).join("|")}> --model <id>
   ${command} export --artifact <artifact.json> [--format ${Object.values(ExportFormat).join("|")}] > cases.csv
 
 Full options:
@@ -111,16 +95,16 @@ ${indent}[--category <slug[,slug...]> | --subset quant-impact]
 ${indent}[--endpoint <provider|tag>]
 ${indent}[--service-tier <${Object.values(ServiceTier).join("|")}>]
 ${indent}[--params <json> | --params-file <json>] [--out <artifact.json>]
-${indent}[--fresh] [--native-json]
 
 --model picks the model to benchmark (required unless a --config supplies
 one); with --config it overrides the file's model, so one config works for
 many models.
-${notes.name}
+--name sets the display name recorded with the run.
 --quant and --ctx record the run's quantization and context window, overriding
 what a local provider reports. --temp sets the sampling temperature (default 0).
 With --config, set them in the file instead.
-${notes.scope}
+--category limits execution to one or more comma-separated suite categories.
+--subset quant-impact runs the full suite as a footprint build of a local model.
 OpenRouter runs pin one serving endpoint with fallbacks off. The CLI picks the
 highest disclosed precision that supports tool calls, cheapest first. Use
 --endpoint to pick one yourself, by provider (deepinfra) or tag (deepinfra/fp8).

@@ -1,9 +1,6 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { cmdExport, ExportFormat, exportCases } from "dabench/cli/export";
-import type { Artifact } from "dabench/engine/schema";
+import { ExportFormat, exportCases } from "../src/cli/export";
+import type { Artifact } from "../src/engine/schema";
 
 const RUN: Pick<Artifact, "runId" | "model" | "caseResults"> = {
   runId: "run-1",
@@ -97,12 +94,5 @@ describe("exporting a run's cases", () => {
       response: "booked=none",
       reasoning: "No slot fits.",
     });
-  });
-
-  it("explains when the file is not a run artifact", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "dabench-export-")), "suite.json");
-    writeFileSync(path, JSON.stringify({ id: "mybench" }));
-
-    expect(() => cmdExport({ artifact: path })).toThrow(`${path} is not a run artifact`);
   });
 });

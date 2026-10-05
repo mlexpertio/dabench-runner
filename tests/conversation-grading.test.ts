@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { executeCase } from "dabench/engine/case-execution";
-import { grade } from "dabench/engine/grader";
-import { TestCaseSchema } from "dabench/engine/suite";
+import { executeCase } from "../src/engine/case-execution";
+import { grade } from "../src/engine/grader";
+import { TestCaseSchema } from "../src/engine/suite";
 import { ScriptedClient } from "./scripted-client";
 
 const conversation = {

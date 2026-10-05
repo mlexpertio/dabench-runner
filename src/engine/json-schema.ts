@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { requireUnique } from "./schema";
 
 const JSON_SCHEMA_TYPES = ["object", "array", "string", "number", "integer", "boolean"] as const;
 const STRING_FORMATS = ["email", "uri", "uuid", "date", "date-time"] as const;
@@ -97,9 +98,7 @@ export const JsonSchemaSpecSchema: z.ZodType<JsonSchemaSpec> = z.lazy(() =>
         }
       }
       const required = s.required ?? [];
-      if (new Set(required).size !== required.length) {
-        ctx.addIssue({ code: "custom", message: "required keys must be unique", path: ["required"] });
-      }
+      requireUnique(ctx, required, "required key", ["required"]);
       for (const key of required) {
         if (!s.properties || !Object.hasOwn(s.properties, key)) {
           ctx.addIssue({

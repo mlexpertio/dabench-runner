@@ -1,8 +1,7 @@
-import type { CompletionClient, CompletionRequest, StreamResult } from "dabench/engine/client";
+import type { CompletionClient, CompletionRequest, StreamResult } from "../src/engine/client";
 
 export type ScriptedReply = string | (Omit<StreamResult, "aborted" | "usage"> & Partial<Pick<StreamResult, "usage">>);
 
-/** Answers from a script in order, repeating its last reply, and keeps every request it was sent. */
 export class ScriptedClient implements CompletionClient {
   readonly requests: CompletionRequest[] = [];
 

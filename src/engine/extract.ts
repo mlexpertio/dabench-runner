@@ -2,7 +2,6 @@ type JsonExtract = { ok: true; value: unknown } | { ok: false; error: string };
 
 const JSON_FENCE = /```(?:json)?\s*([\s\S]*?)```/i;
 
-/** The JSON inside an answer that isn't a bare JSON value: its first fenced block, else its first balanced value. */
 export function extractEmbeddedJson(output: string): JsonExtract {
   const text = output.trim();
   for (const candidate of [text.match(JSON_FENCE)?.[1].trim(), firstBalanced(text)]) {
@@ -16,7 +15,6 @@ export function extractEmbeddedJson(output: string): JsonExtract {
 
 const FENCED_BLOCK = /```[^\n`]*\r?\n([\s\S]*?)```/gu;
 
-/** The contents of each fenced block, whatever language the fence names. */
 export function fencedBlocks(output: string): string[] {
   return [...output.matchAll(FENCED_BLOCK)].map((match) => match[1]);
 }

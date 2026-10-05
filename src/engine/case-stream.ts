@@ -1,5 +1,6 @@
 import { CHARS_PER_TOKEN, isTimedWindow } from "./calc";
-import { completionTokensOf, type CompletionClient, type StreamHandlers } from "./client";
+import { completionTokensOf, type CompletionClient, type StreamHandlers, type StreamResult } from "./client";
+import type { CaseTiming } from "./metrics";
 
 const TICK_INTERVAL_MS = 400;
 
@@ -10,41 +11,24 @@ export interface StreamTick {
   elapsedMs: number;
 }
 
-interface CaseTiming {
-  requestMs: number;
-  timedTokens: number;
-  timedMs: number;
-}
-
-/** One case's completions as they stream: live token ticks, and the time spent answering. */
-interface CaseStream extends CompletionClient {
-  /** Starts the counts over for a new attempt at the case. */
-  restart(): void;
+export interface CaseStream extends CompletionClient {
   timing(): CaseTiming;
 }
 
-interface AttemptCounts extends CaseTiming {
-  reasoningChars: number;
-  contentChars: number;
-  lastDeltaWasReasoning: boolean;
-}
-
-/**
- * Times each completion from its last try, so rate-limit backoff and failed tries don't count,
- * and sums them over the case. The rate times each completion from its first output of any kind,
- * and only when that output streamed long enough to time. A completion whose whole output arrives
- * in one burst adds neither its tokens nor its time.
- */
 export function createCaseStream(
   client: CompletionClient,
   clock: () => number,
   onTick: ((tick: StreamTick) => void) | undefined,
 ): CaseStream {
   const tickStart = onTick ? clock() : 0;
+  const timing: CaseTiming = { requestMs: 0, timedTokens: 0, timedMs: 0 };
   let lastTickAt = 0;
   let completionStartedAt = 0;
   let firstOutputAt: number | null = null;
-  let counts = freshCounts();
+  let reasoningChars = 0;
+  let contentChars = 0;
+  let lastDeltaWasReasoning = false;
+  let reasoningStreamed = false;
 
   const observeOutput = (): void => {
     if (firstOutputAt !== null && !onTick) return;
@@ -53,27 +37,31 @@ export function createCaseStream(
     if (!onTick || now - lastTickAt < TICK_INTERVAL_MS) return;
     lastTickAt = now;
     onTick({
-      phase: counts.lastDeltaWasReasoning || counts.contentChars === 0 ? "thinking" : "answering",
-      reasoningTokens: Math.round(counts.reasoningChars / CHARS_PER_TOKEN),
-      contentTokens: Math.round(counts.contentChars / CHARS_PER_TOKEN),
+      phase: lastDeltaWasReasoning || contentChars === 0 ? "thinking" : "answering",
+      reasoningTokens: Math.round(reasoningChars / CHARS_PER_TOKEN),
+      contentTokens: Math.round(contentChars / CHARS_PER_TOKEN),
       elapsedMs: now - tickStart,
     });
   };
   const startCompletion = (): void => {
     completionStartedAt = clock();
     firstOutputAt = null;
+    reasoningStreamed = false;
   };
+  const reasoningWasHidden = (result: StreamResult): boolean =>
+    (result.usage?.reasoningTokens ?? 0) > 0 && !reasoningStreamed;
 
   const handlers: StreamHandlers = {
     onAttempt: startCompletion,
     onDelta: (delta) => {
-      counts.contentChars += delta.length;
-      counts.lastDeltaWasReasoning = false;
+      contentChars += delta.length;
+      lastDeltaWasReasoning = false;
       observeOutput();
     },
     onReasoningDelta: (delta) => {
-      counts.reasoningChars += delta.length;
-      counts.lastDeltaWasReasoning = true;
+      reasoningChars += delta.length;
+      lastDeltaWasReasoning = true;
+      reasoningStreamed = true;
       observeOutput();
     },
     onToolCallDelta: observeOutput,
@@ -84,28 +72,15 @@ export function createCaseStream(
       startCompletion();
       const result = await client.stream(request, handlers);
       const now = clock();
-      counts.requestMs += now - completionStartedAt;
-      const outputMs = firstOutputAt === null ? 0 : now - firstOutputAt;
+      timing.requestMs += now - completionStartedAt;
+      const generationStartedAt = reasoningWasHidden(result) ? completionStartedAt : firstOutputAt;
+      const outputMs = generationStartedAt === null ? 0 : now - generationStartedAt;
       if (isTimedWindow(outputMs)) {
-        counts.timedMs += outputMs;
-        counts.timedTokens += completionTokensOf(result);
+        timing.timedMs += outputMs;
+        timing.timedTokens += completionTokensOf(result);
       }
       return result;
     },
-    restart: () => {
-      counts = freshCounts();
-    },
-    timing: () => ({ requestMs: counts.requestMs, timedTokens: counts.timedTokens, timedMs: counts.timedMs }),
-  };
-}
-
-function freshCounts(): AttemptCounts {
-  return {
-    requestMs: 0,
-    timedTokens: 0,
-    timedMs: 0,
-    reasoningChars: 0,
-    contentChars: 0,
-    lastDeltaWasReasoning: false,
+    timing: () => ({ ...timing }),
   };
 }
