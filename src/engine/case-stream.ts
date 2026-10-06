@@ -4,8 +4,14 @@ import type { CaseTiming } from "./metrics";
 
 const TICK_INTERVAL_MS = 400;
 
+export enum StreamPhase {
+  Thinking = "thinking",
+  Answering = "answering",
+  CallingTools = "calling-tools",
+}
+
 export interface StreamTick {
-  phase: "thinking" | "answering";
+  phase: StreamPhase;
   reasoningTokens: number;
   contentTokens: number;
   elapsedMs: number;
@@ -23,21 +29,22 @@ export function createCaseStream(
   const tickStart = onTick ? clock() : 0;
   const timing: CaseTiming = { requestMs: 0, timedTokens: 0, timedMs: 0 };
   let lastTickAt = 0;
+  let lastTickPhase: StreamPhase | null = null;
   let completionStartedAt = 0;
   let firstOutputAt: number | null = null;
   let reasoningChars = 0;
   let contentChars = 0;
-  let lastDeltaWasReasoning = false;
   let reasoningStreamed = false;
 
-  const observeOutput = (): void => {
+  const observeOutput = (phase: StreamPhase): void => {
     if (firstOutputAt !== null && !onTick) return;
     const now = clock();
     firstOutputAt ??= now;
-    if (!onTick || now - lastTickAt < TICK_INTERVAL_MS) return;
+    if (!onTick || (phase === lastTickPhase && now - lastTickAt < TICK_INTERVAL_MS)) return;
     lastTickAt = now;
+    lastTickPhase = phase;
     onTick({
-      phase: lastDeltaWasReasoning || contentChars === 0 ? "thinking" : "answering",
+      phase,
       reasoningTokens: Math.round(reasoningChars / CHARS_PER_TOKEN),
       contentTokens: Math.round(contentChars / CHARS_PER_TOKEN),
       elapsedMs: now - tickStart,
@@ -55,16 +62,14 @@ export function createCaseStream(
     onAttempt: startCompletion,
     onDelta: (delta) => {
       contentChars += delta.length;
-      lastDeltaWasReasoning = false;
-      observeOutput();
+      observeOutput(StreamPhase.Answering);
     },
     onReasoningDelta: (delta) => {
       reasoningChars += delta.length;
-      lastDeltaWasReasoning = true;
       reasoningStreamed = true;
-      observeOutput();
+      observeOutput(StreamPhase.Thinking);
     },
-    onToolCallDelta: observeOutput,
+    onToolCallDelta: () => observeOutput(StreamPhase.CallingTools),
   };
 
   return {

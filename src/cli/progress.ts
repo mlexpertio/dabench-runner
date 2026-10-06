@@ -1,4 +1,5 @@
 import { MS_PER_SECOND } from "../engine/calc";
+import { StreamPhase, type StreamTick } from "../engine/case-stream";
 import { pluralize } from "../engine/format";
 import type { RetryOptions } from "../engine/openai-client";
 import type { RunObserver } from "../engine/runner";
@@ -26,13 +27,12 @@ export function createProgressReporter(): Required<RunObserver> {
       if (!IS_TTY) return;
       progressWrite(` ${SPINNER[0]} ${tag(index, total)} ${category}/${caseId} · starting…`);
     },
-    onCaseTick: ({ index, total, caseId, category, phase, reasoningTokens, contentTokens, elapsedMs }) => {
+    onCaseTick: (tick) => {
       if (!IS_TTY) return;
+      const { index, total, caseId, category, elapsedMs } = tick;
       const frame = SPINNER[spin++ % SPINNER.length];
-      const verb = phase === "thinking" ? "thinking" : "writing";
-      const tok = phase === "thinking" ? reasoningTokens : contentTokens;
       progressWrite(
-        ` ${frame} ${tag(index, total)} ${category}/${caseId} · ${verb} ${formatTokens(tok)} tok · ${Math.round(elapsedMs / MS_PER_SECOND)}s`,
+        ` ${frame} ${tag(index, total)} ${category}/${caseId} · ${formatActivity(tick)} · ${Math.round(elapsedMs / MS_PER_SECOND)}s`,
       );
     },
     onCaseError: ({ index, total, caseId, category, message }) => {
@@ -44,6 +44,17 @@ export function createProgressReporter(): Required<RunObserver> {
       else console.error(line);
     },
   };
+}
+
+function formatActivity({ phase, reasoningTokens, contentTokens }: StreamTick): string {
+  switch (phase) {
+    case StreamPhase.CallingTools:
+      return "calling tools";
+    case StreamPhase.Thinking:
+      return `thinking ${formatTokens(reasoningTokens)} tok`;
+    case StreamPhase.Answering:
+      return `writing ${formatTokens(contentTokens)} tok`;
+  }
 }
 
 function formatTokens(n: number): string {

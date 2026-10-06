@@ -492,6 +492,63 @@ describe("BenchmarkRunner — reasoning token accounting", () => {
   });
 });
 
+describe("BenchmarkRunner — case progress", () => {
+  it.each([
+    {
+      scenario: "without reasoning",
+      reasoning: "",
+      expectedTicks: [
+        { phase: "calling-tools", reasoningTokens: 0, contentTokens: 0 },
+        { phase: "answering", reasoningTokens: 0, contentTokens: 1 },
+      ],
+    },
+    {
+      scenario: "immediately after reasoning",
+      reasoning: "plan",
+      expectedTicks: [
+        { phase: "thinking", reasoningTokens: 1, contentTokens: 0 },
+        { phase: "calling-tools", reasoningTokens: 1, contentTokens: 0 },
+        { phase: "answering", reasoningTokens: 1, contentTokens: 1 },
+      ],
+    },
+  ])("reports tool calls $scenario separately from reasoning and answer text", async ({ reasoning, expectedTicks }) => {
+    const TURN_MS = 1000;
+    const FRAGMENT_MS = 10;
+    let now = 0;
+    const ticks: Array<{ phase: string; reasoningTokens: number; contentTokens: number }> = [];
+    const client: CompletionClient = {
+      async stream(request, handlers) {
+        const callsTool = !request.messages.some((message) => message.role === "tool");
+        now += TURN_MS;
+        if (callsTool) {
+          if (reasoning) handlers?.onReasoningDelta?.(reasoning);
+          now += FRAGMENT_MS;
+          handlers?.onToolCallDelta?.();
+        } else handlers?.onDelta?.("done");
+        return {
+          text: callsTool ? "" : "done",
+          toolCalls: callsTool ? [{ id: "c1", name: "f", args: {} }] : undefined,
+          usage,
+          aborted: false,
+        };
+      },
+    };
+    const suite = oneCaseSuite(TOOL_CALLING, {
+      graderKind: "tooltrace",
+      prompt: { user: "call f" },
+      tools: [{ name: "f" }],
+      expectedTools: [{ name: "f" }],
+    });
+
+    await benchmark(suite, client, {
+      clock: () => now,
+      onCaseTick: ({ phase, reasoningTokens, contentTokens }) => ticks.push({ phase, reasoningTokens, contentTokens }),
+    });
+
+    expect(ticks).toEqual(expectedTicks);
+  });
+});
+
 describe("BenchmarkRunner — case timing", () => {
   const arithmetic = () =>
     oneCaseSuite(ARITHMETIC, { graderKind: "exact", prompt: { user: "17*23?" }, expected: "391" });
