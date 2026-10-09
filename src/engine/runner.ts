@@ -3,7 +3,6 @@ import { buildArtifact, type CompletedCase, type RunIdentity } from "./artifact"
 import type { CostBasis } from "./calc";
 import { executeCase, failedExecution, type CaseExecution } from "./case-execution";
 import { caseResponse } from "./case-response";
-import type { SelectedCase } from "./case-selection";
 import { createCaseStream, type CaseStream, type StreamTick } from "./case-stream";
 import type { CompletionClient, ToolCall } from "./client";
 import { grade } from "./grader";
@@ -56,7 +55,6 @@ interface RunBenchmarkOptions extends RunObserver {
   identity: RunIdentity;
   client: CompletionClient;
   cost: CostBasis;
-  cases: readonly SelectedCase[];
   memoryMonitor?: MemoryMonitor;
   resumeFrom?: Artifact;
   clock?: () => number;
@@ -74,7 +72,8 @@ interface TimedExecution {
 }
 
 export async function runBenchmark(opts: RunBenchmarkOptions): Promise<Artifact> {
-  const { cases, resumeFrom, memoryMonitor } = opts;
+  const { identity, resumeFrom, memoryMonitor } = opts;
+  const { cases } = identity.suite;
   const clock = opts.clock ?? Date.now;
   const resumed = (resumeFrom?.caseResults ?? []).map((result) => ({ result, timed: recordedOutput(result.metrics) }));
   const recorded = new Set(resumed.map(({ result }) => result.caseId));
@@ -82,9 +81,9 @@ export async function runBenchmark(opts: RunBenchmarkOptions): Promise<Artifact>
   const runs = [...resumed];
   const memorySoFar = () => mergeMemory(priorMemory, memoryMonitor?.usage() ?? null);
 
-  for (const [position, { testCase, suiteIndex }] of cases.entries()) {
+  for (const [suiteIndex, testCase] of cases.entries()) {
     if (recorded.has(testCase.id)) continue;
-    const caseStart = { index: position + 1, total: cases.length, caseId: testCase.id, category: testCase.category };
+    const caseStart = { index: suiteIndex + 1, total: cases.length, caseId: testCase.id, category: testCase.category };
     const run = await runCase(opts, clock, testCase, caseStart);
     runs.push(run);
     await opts.onCheckpoint?.(assembleArtifact(opts, runs, memorySoFar()), { result: run.result, suiteIndex });

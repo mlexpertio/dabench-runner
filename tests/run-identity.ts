@@ -8,16 +8,9 @@ interface TestIdentityInput extends Partial<Omit<RunIdentity, "fingerprint" | "c
   config: ModelConfig;
 }
 
-export function testIdentity({
-  suite,
-  model,
-  config,
-  modelHash = null,
-  subset = null,
-  ...rest
-}: TestIdentityInput): RunIdentity {
+export function testIdentity({ suite, model, config, modelHash = null, ...rest }: TestIdentityInput): RunIdentity {
   return {
-    ...runKey({ suite, model, config, modelHash, subset }),
+    ...runKey({ suite, model, config, modelHash }),
     runId: "run-under-test",
     startedAt: new Date(0).toISOString(),
     hardware: null,

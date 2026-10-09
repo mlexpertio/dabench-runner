@@ -1,5 +1,4 @@
 import { dirname, resolve } from "node:path";
-import { selectCases, type SelectedCase } from "../engine/case-selection";
 import { shellQuote } from "../engine/format";
 import { errorMessage, isRecord } from "../engine/guards";
 import {
@@ -11,8 +10,6 @@ import {
   OPENROUTER_ATTRIBUTION_HEADERS,
 } from "../engine/harness";
 import { parseServiceTier, type ServiceTier } from "../engine/openrouter-endpoints";
-import { CaseSubset } from "../engine/schema";
-import type { Suite } from "../engine/suite";
 import {
   booleanFlag,
   enumFlag,
@@ -39,8 +36,6 @@ enum RunFlag {
   Temp = "temp",
   Params = "params",
   ParamsFile = "params-file",
-  Subset = "subset",
-  Category = "category",
   Out = "out",
   Endpoint = "endpoint",
   ServiceTier = "service-tier",
@@ -48,14 +43,8 @@ enum RunFlag {
 }
 
 const RUN_FLAGS_SOURCE = "run flags";
-const CONFIG_RUN_FLAGS: readonly string[] = [
-  RunFlag.Config,
-  RunFlag.Model,
-  RunFlag.Name,
-  RunFlag.Subset,
-  RunFlag.ServiceTier,
-];
-const SCOPE_FLAGS: readonly string[] = [RunFlag.Category, RunFlag.Fresh, RunFlag.Out, RunFlag.Endpoint];
+const CONFIG_RUN_FLAGS: readonly string[] = [RunFlag.Config, RunFlag.Model, RunFlag.Name, RunFlag.ServiceTier];
+const SCOPE_FLAGS: readonly string[] = [RunFlag.Fresh, RunFlag.Out, RunFlag.Endpoint];
 const PUBLIC_RUN_FLAGS = Object.values(RunFlag).filter((flag) => flag !== RunFlag.Fresh);
 const BASE_URLS: Partial<Record<Harness, string>> = DEFAULT_BASE_URLS;
 
@@ -68,8 +57,6 @@ export interface RunInputs {
   configDir: string;
   suitePath: string;
   reproduceCommand: string;
-  categories: string[] | undefined;
-  subset: CaseSubset | null;
   serviceTier: ServiceTier | null;
   fresh: boolean;
   outPath: string | undefined;
@@ -77,12 +64,6 @@ export interface RunInputs {
 }
 
 type ResolvedConfig = Pick<RunInputs, "config" | "configDir" | "suitePath">;
-
-interface RecordedScope {
-  pinnedTag: string | null;
-  categories: readonly string[] | undefined;
-  declaredCount: number;
-}
 
 export function resolveRunInputs(flags: Flags, command: string): RunInputs {
   const resolved = RunFlag.Config in flags ? configRun(flags) : providerRun(flags);
@@ -93,15 +74,9 @@ export function resolveRunInputs(flags: Flags, command: string): RunInputs {
   const endpoint = stringFlag(flags, RunFlag.Endpoint);
   if (endpoint && !onOpenRouter)
     fail(`--${RunFlag.Endpoint} pins an OpenRouter endpoint, so it needs --${RunFlag.Provider} openrouter.`);
-  const categories = requestedCategories(flags);
-  const subset = enumFlag(flags, RunFlag.Subset, CaseSubset) ?? null;
-  if (subset && categories)
-    fail(`--${RunFlag.Subset} runs the whole suite, so it can't be combined with --${RunFlag.Category}.`);
   return {
     ...resolved,
     reproduceCommand: reproduceCommand(command, flags),
-    categories,
-    subset,
     serviceTier,
     fresh: booleanFlag(flags, RunFlag.Fresh),
     outPath: stringFlag(flags, RunFlag.Out),
@@ -109,18 +84,8 @@ export function resolveRunInputs(flags: Flags, command: string): RunInputs {
   };
 }
 
-export function requestedCases(suite: Suite, { categories }: Pick<RunInputs, "categories">): SelectedCase[] {
-  try {
-    return selectCases(suite, categories);
-  } catch (err) {
-    fail(`--${RunFlag.Category}: ${errorMessage(err)}`);
-  }
-}
-
-export function recordedCommand(command: string, { pinnedTag, categories, declaredCount }: RecordedScope): string {
-  const pinned = pinnedTag ? `${command} --${RunFlag.Endpoint} ${shellQuote(pinnedTag)}` : command;
-  if (!categories || categories.length >= declaredCount) return pinned;
-  return `${pinned} --${RunFlag.Category} ${shellQuote(categories.join(","))}`;
+export function recordedCommand(command: string, pinnedTag: string | null): string {
+  return pinnedTag ? `${command} --${RunFlag.Endpoint} ${shellQuote(pinnedTag)}` : command;
 }
 
 function openRouterTier(config: RunConfig, requested: string | undefined): ServiceTier {
@@ -194,14 +159,6 @@ function reproduceCommand(command: string, flags: Flags): string {
     args.push(`--${name}`, ...(typeof value === "string" ? [value] : []));
   }
   return `${command} ${args.map(shellQuote).join(" ")}`;
-}
-
-function requestedCategories(flags: Flags): string[] | undefined {
-  const requested = (stringFlag(flags, RunFlag.Category) ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  return requested.length > 0 ? [...new Set(requested)] : undefined;
 }
 
 function providerParameters(flags: Flags): Record<string, unknown> {

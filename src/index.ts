@@ -35,7 +35,6 @@ export { pinnedTag } from "./engine/openrouter-endpoints";
 export { discoverProviderModels, type DiscoveredModel } from "./engine/provider-discovery";
 export {
   ArtifactSchema,
-  CaseSubset,
   Deployment,
   type Artifact,
   type Assertion,

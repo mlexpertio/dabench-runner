@@ -9,10 +9,6 @@ export enum Deployment {
   Local = "local",
 }
 
-export enum CaseSubset {
-  QuantImpact = "quant-impact",
-}
-
 export const JsonValueSchema = z.custom<JsonValue>(isJsonValue, "expected a JSON value");
 export const JsonObjectSchema = z.custom<JsonObject>(isJsonObject, "expected a JSON object");
 
@@ -224,7 +220,6 @@ const RunSchema = z.object({
   hardware: HardwareSchema.nullable().optional(),
   deployment: z.enum(Deployment),
   servingProvider: z.string().min(1).nullable(),
-  subset: z.enum(CaseSubset).nullable(),
 });
 const ReproduceSchema = z.object({
   command: z.string().min(1),

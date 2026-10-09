@@ -4,7 +4,6 @@ import {
   ArtifactSchema,
   type Artifact,
   type CaseResult,
-  type CaseSubset,
   type CategoryScore,
   type Cost,
   type Deployment,
@@ -37,7 +36,6 @@ interface RunSubject {
   config: ModelConfig;
   suite: Suite;
   modelHash: string | null;
-  subset: CaseSubset | null;
 }
 
 export interface RunKey extends RunSubject {
@@ -102,7 +100,6 @@ export function artifactHeader(identity: RunIdentity): ArtifactHeader {
       hardware: identity.hardware,
       deployment: identity.deployment,
       servingProvider: identity.servingProvider,
-      subset: identity.subset,
     },
     reproduce: {
       command: identity.reproduceCommand,

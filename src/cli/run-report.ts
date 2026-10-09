@@ -1,7 +1,7 @@
 import { formatPerMillion, MB_PER_GB, passedCount, pluralize, shortHash } from "../engine/format";
 import type { ServingEndpoint } from "../engine/openrouter-endpoints";
 import type { DiscoveredModel } from "../engine/provider-discovery";
-import type { Artifact, CaseSubset, Hardware, MemoryKind, ModelConfig } from "../engine/schema";
+import type { Artifact, Hardware, MemoryKind, ModelConfig } from "../engine/schema";
 import type { Suite } from "../engine/suite";
 
 const DEFAULT_BASE_URL_LABEL = "OpenAI default base URL";
@@ -18,21 +18,17 @@ interface LocalEndpoint {
 
 interface RunHeader {
   suite: Suite;
-  categories: string[] | undefined;
-  subset: { name: CaseSubset; cases: number } | null;
   modelId: string;
   config: ModelConfig;
   discovered: DiscoveredModel | null;
   pinned: ServingEndpoint | null;
   local: LocalEndpoint | null;
   hardware: Hardware | null;
-  resumed: { runId: string; recorded: number; selected: number } | null;
+  resumed: { runId: string; recorded: number } | null;
 }
 
 export function printRunHeader({
   suite,
-  categories,
-  subset,
   modelId,
   config,
   discovered,
@@ -42,17 +38,12 @@ export function printRunHeader({
   resumed,
 }: RunHeader): void {
   if (resumed) {
-    const remaining = resumed.selected - resumed.recorded;
+    const total = suite.cases.length;
     console.error(
-      `▸ reusing run ${resumed.runId} · ${resumed.recorded}/${resumed.selected} selected cases recorded · ${Math.max(0, remaining)} remaining`,
+      `▸ reusing run ${resumed.runId} · ${resumed.recorded}/${total} cases recorded · ${Math.max(0, total - resumed.recorded)} remaining`,
     );
   }
-  const scopeNote = subset
-    ? ` · ${subset.name} subset (${subset.cases} cases)`
-    : categories
-      ? ` · categories ${categories.join(", ")}`
-      : "";
-  console.error(`▸ running suite ${suite.id}@${suite.version}${scopeNote} against ${modelId} via ${config.harness}…`);
+  console.error(`▸ running suite ${suite.id}@${suite.version} against ${modelId} via ${config.harness}…`);
   if (discovered) {
     const facts = [
       discovered.name && discovered.name !== modelId ? `actual model ${discovered.name}` : null,

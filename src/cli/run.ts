@@ -10,15 +10,14 @@ import { OpenAICompletionClient } from "../engine/openai-client";
 import { fetchEndpoints, pickEndpoint, type ServiceTier, type ServingEndpoint } from "../engine/openrouter-endpoints";
 import { discoverProviderModels, type DiscoveredModel } from "../engine/provider-discovery";
 import { runBenchmark, type MemoryMonitor } from "../engine/runner";
-import { Deployment, type Artifact, type Hardware } from "../engine/schema";
-import type { Suite } from "../engine/suite";
+import { Deployment, type Hardware } from "../engine/schema";
 import { fail, loadSuite, type Flags } from "./args";
 import { detectHardware } from "./hardware";
 import { createLocalMemoryMonitor } from "./memory";
 import type { CliHost } from "./program";
 import { createProgressReporter, reportRetry } from "./progress";
 import { runSubject, servingTarget, type LocalEndpointConfig, type RunConfig } from "./run-config";
-import { recordedCommand, requestedCases, resolveRunInputs } from "./run-inputs";
+import { recordedCommand, resolveRunInputs } from "./run-inputs";
 import { printRunHeader, printRunSummary } from "./run-report";
 import { createLocalRunStore, writeJson } from "./run-store";
 
@@ -38,7 +37,6 @@ export async function cmdRun(flags: Flags, host: CliHost): Promise<void> {
   const { config } = inputs;
   const { local: localEndpoint } = config.openai;
   const suite = loadSuite(inputs.suitePath);
-  const selectedCases = requestedCases(suite, inputs);
   const target = servingTarget(config, process.env);
 
   const client = buildCompletionClient(config);
@@ -55,7 +53,6 @@ export async function cmdRun(flags: Flags, host: CliHost): Promise<void> {
     config: subject.config,
     suite,
     modelHash: subject.modelHash,
-    subset: inputs.subset,
   });
   const resumable = inputs.fresh ? null : await store.findResumableRun(key);
   const resumeFrom = resumable?.artifact ?? undefined;
@@ -66,30 +63,20 @@ export async function cmdRun(flags: Flags, host: CliHost): Promise<void> {
     hardware: machine?.hardware ?? null,
     deployment: target.deployment,
     servingProvider: pinned?.providerName ?? (target.deployment === Deployment.Hosted ? target.url.hostname : null),
-    reproduceCommand: recordedCommand(inputs.reproduceCommand, {
-      pinnedTag: pinned?.tag ?? null,
-      categories: scopedCategories(suite, inputs.categories, resumeFrom),
-      declaredCount: suite.categories.length,
-    }),
+    reproduceCommand: recordedCommand(inputs.reproduceCommand, pinned?.tag ?? null),
   };
-  const selectedCaseIds = new Set(selectedCases.map(({ testCase }) => testCase.id));
-  const recordedSelectedCases =
-    resumeFrom?.caseResults.filter((result) => selectedCaseIds.has(result.caseId)).length ?? 0;
-  const casesToRun = selectedCases.length - recordedSelectedCases;
+  const recordedCases = resumeFrom?.caseResults.length ?? 0;
+  const casesToRun = suite.cases.length - recordedCases;
 
   printRunHeader({
     suite,
-    categories: inputs.categories,
-    subset: inputs.subset ? { name: inputs.subset, cases: selectedCases.length } : null,
     modelId: config.model.id,
     config: key.config,
     discovered,
     pinned,
     local: localEndpoint ? { baseUrl: config.openai.baseUrl, gpuHourlyUsd: localEndpoint.gpuHourlyUsd } : null,
     hardware: identity.hardware,
-    resumed: resumable
-      ? { runId: identity.runId, recorded: recordedSelectedCases, selected: selectedCases.length }
-      : null,
+    resumed: resumable ? { runId: identity.runId, recorded: recordedCases } : null,
   });
 
   await store.beginRun(artifactHeader(identity));
@@ -100,7 +87,6 @@ export async function cmdRun(flags: Flags, host: CliHost): Promise<void> {
     cost: subject.cost,
     memoryMonitor: machine?.memoryMonitor,
     resumeFrom,
-    cases: selectedCases,
     onCheckpoint: async (checkpoint, completed) => {
       await store.checkpointRun(checkpoint, completed);
       if (extraArtifactFile) writeJson(extraArtifactFile, checkpoint);
@@ -109,7 +95,7 @@ export async function cmdRun(flags: Flags, host: CliHost): Promise<void> {
   });
 
   if (casesToRun === 0) {
-    console.error(`  ↷ skipped all ${selectedCases.length} selected cases because their results are already recorded`);
+    console.error(`  ↷ skipped all ${suite.cases.length} cases because their results are already recorded`);
   }
 
   printRunSummary(artifact, localEndpoint !== undefined);
@@ -124,20 +110,6 @@ export async function cmdRun(flags: Flags, host: CliHost): Promise<void> {
   console.error(
     `  ✓ recorded ${artifact.runId} (${pluralize(artifact.categoryScores.length, "category", "categories")}) · ${store.completionNote(artifact)}`,
   );
-}
-
-function scopedCategories(
-  suite: Suite,
-  selected: string[] | undefined,
-  resumeFrom: Artifact | undefined,
-): string[] | undefined {
-  if (!selected) return undefined;
-  return suite.categories
-    .map((category) => category.slug)
-    .filter(
-      (category) =>
-        selected.includes(category) || resumeFrom?.caseResults.some((result) => result.category === category),
-    );
 }
 
 async function pinServingEndpoint(

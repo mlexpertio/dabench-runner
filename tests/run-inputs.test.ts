@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CliError, parseArgs, unknownFlags } from "../src/cli/args";
 import { recordedCommand, resolveRunInputs, runFlags } from "../src/cli/run-inputs";
-import { CaseSubset } from "../src/engine/schema";
 
 const COMMAND = "npm run engine --";
 const SUITE = "suites/sample.suite.json";
@@ -67,11 +66,8 @@ describe("run inputs", () => {
     [`--config ${CONFIG} --quant Q8_0 --temp 1`, "--quant, --temp cannot be combined with --config"],
     [`${LOCAL.join(" ")} --temp abc`, "--temp must be a non-negative number"],
     [`${LOCAL.join(" ")} --temp`, "--temp must be a non-negative number"],
-    [`${LOCAL.join(" ")} --category`, "--category needs a value"],
     [`${LOCAL.join(" ")} --fresh false`, "--fresh takes no value"],
     [`${LOCAL.join(" ")} --endpoint deepinfra/fp8`, "--endpoint pins an OpenRouter endpoint"],
-    [`${LOCAL.join(" ")} --subset tiny`, "One of: quant-impact"],
-    [`${LOCAL.join(" ")} --subset quant-impact --category coding`, "can't be combined with --category"],
     [`${LOCAL.join(" ")} --ctx 0`, "config.contextWindow"],
     [`${LOCAL.join(" ")} --params-file missing-params.json`, "missing-params.json"],
   ])("rejects %s as a CLI error, not a stack trace", (argv, message) => {
@@ -92,16 +88,8 @@ describe("run inputs", () => {
     const run = inputs(["--provider", "openrouter", "--model", "acme/x", "--suite", SUITE, "--endpoint", "deepinfra"]);
     expect(run.endpoint).toBe("deepinfra");
     expect(run.reproduceCommand).not.toContain("--endpoint");
-    expect(
-      recordedCommand(run.reproduceCommand, { pinnedTag: "deepinfra/fp8", categories: undefined, declaredCount: 1 }),
-    ).toBe(`${COMMAND} run --provider openrouter --model acme/x --suite ${SUITE} --endpoint deepinfra/fp8`);
-  });
-
-  it("labels a run with a named subset and records it in the command", () => {
-    const run = inputs([...LOCAL, "--subset", "quant-impact"]);
-    expect(run.subset).toBe(CaseSubset.QuantImpact);
-    expect(run.reproduceCommand).toBe(
-      `${COMMAND} run --provider llama.cpp --model gemma --suite ${SUITE} --subset quant-impact`,
+    expect(recordedCommand(run.reproduceCommand, "deepinfra/fp8")).toBe(
+      `${COMMAND} run --provider openrouter --model acme/x --suite ${SUITE} --endpoint deepinfra/fp8`,
     );
   });
 });

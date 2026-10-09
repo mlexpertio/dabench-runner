@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { RunIdentity } from "../src/engine/artifact";
-import { selectCases } from "../src/engine/case-selection";
 import type { CompletionClient } from "../src/engine/client";
 import { OpenAICompletionClient } from "../src/engine/openai-client";
 import { runBenchmark, type MemoryMonitor } from "../src/engine/runner";
@@ -130,7 +129,6 @@ function benchmark(suite: Suite, client: CompletionClient, options: Partial<Benc
     identity: identity(suite),
     client,
     cost: null,
-    cases: selectCases(suite, undefined),
     ...options,
   });
 }
@@ -352,7 +350,7 @@ describe("BenchmarkRunner — SQL prompts", () => {
 });
 
 describe("BenchmarkRunner — resumable checkpoints", () => {
-  it("resumes an interrupted run with only its missing cases, and reruns nothing in a recorded scope", async () => {
+  it("resumes an interrupted run with only its missing cases, and reruns nothing once all are recorded", async () => {
     const suite = mixedSuite();
     let checkpoint: Artifact | undefined;
     let firstClock = 0;
@@ -391,10 +389,7 @@ describe("BenchmarkRunner — resumable checkpoints", () => {
     expect(resumed.caseResults.every((result) => result.score === 100)).toBe(true);
 
     const noCalls = new ScriptedClient([]);
-    const unchanged = await benchmark(suite, noCalls, {
-      cases: selectCases(suite, ["structured-output"]),
-      resumeFrom: resumed,
-    });
+    const unchanged = await benchmark(suite, noCalls, { resumeFrom: resumed });
 
     expect(noCalls.requests).toHaveLength(0);
     expect(unchanged.caseResults).toEqual(resumed.caseResults);
@@ -406,7 +401,9 @@ describe("BenchmarkRunner — run totals", () => {
   const USAGE = { promptTokens: 1000, completionTokens: 500 };
   const CASE_COST_USD = 0.002;
 
-  function pricedRun(categories: string[], resumeFrom?: Artifact) {
+  const INTERRUPTED_AFTER = 2;
+
+  function pricedRun(options: Partial<BenchmarkOptions> = {}) {
     let now = 0;
     const client: CompletionClient = {
       async stream() {
@@ -414,24 +411,27 @@ describe("BenchmarkRunner — run totals", () => {
         return { text: "391", usage: USAGE, aborted: false };
       },
     };
-    const suite = mixedSuite();
-    return benchmark(suite, client, {
-      cost: PRICING,
-      cases: selectCases(suite, categories),
-      resumeFrom,
-      clock: () => now,
-    });
+    return benchmark(mixedSuite(), client, { cost: PRICING, clock: () => now, ...options });
   }
 
   it("prices a hosted run's tokens and sums its request time, counting the cases a resume reused", async () => {
-    const first = await pricedRun(["arithmetic"]);
-    expect(first.cost).toEqual({ amountUsd: 2 * CASE_COST_USD, currency: "USD", estimated: false });
-    expect(first.metrics.latencyMs).toBe(2 * REQUEST_MS);
+    let first: Artifact | undefined;
+    await expect(
+      pricedRun({
+        onCheckpoint: (artifact) => {
+          first = artifact;
+          if (artifact.caseResults.length === INTERRUPTED_AFTER) throw new Error("simulated interruption");
+        },
+      }),
+    ).rejects.toThrow("simulated interruption");
+    expect(first?.cost).toEqual({ amountUsd: INTERRUPTED_AFTER * CASE_COST_USD, currency: "USD", estimated: false });
+    expect(first?.metrics.latencyMs).toBe(INTERRUPTED_AFTER * REQUEST_MS);
 
-    const resumed = await pricedRun(["structured-output"], first);
-    expect(resumed.cost).toEqual({ amountUsd: 3 * CASE_COST_USD, currency: "USD", estimated: false });
-    expect(resumed.metrics.latencyMs).toBe(3 * REQUEST_MS);
-    expect(resumed.metrics.tokens.total).toBe(3 * (USAGE.promptTokens + USAGE.completionTokens));
+    const resumed = await pricedRun({ resumeFrom: first });
+    const caseCount = mixedSuite().cases.length;
+    expect(resumed.cost).toEqual({ amountUsd: caseCount * CASE_COST_USD, currency: "USD", estimated: false });
+    expect(resumed.metrics.latencyMs).toBe(caseCount * REQUEST_MS);
+    expect(resumed.metrics.tokens.total).toBe(caseCount * (USAGE.promptTokens + USAGE.completionTokens));
   });
 });
 

@@ -91,7 +91,6 @@ Full options:
   ${runOptions}--config <run.json> | (--suite <s> --provider <p>)
 ${indent}[--model <id>] [--name <label>]
 ${indent}[--quant <label>] [--ctx <tokens>] [--temp <temperature>]
-${indent}[--category <slug[,slug...]> | --subset quant-impact]
 ${indent}[--endpoint <provider|tag>]
 ${indent}[--service-tier <${Object.values(ServiceTier).join("|")}>]
 ${indent}[--params <json> | --params-file <json>] [--out <artifact.json>]
@@ -103,8 +102,6 @@ many models.
 --quant and --ctx record the run's quantization and context window, overriding
 what a local provider reports. --temp sets the sampling temperature (default 0).
 With --config, set them in the file instead.
---category limits execution to one or more comma-separated suite categories.
---subset quant-impact runs the full suite as a footprint build of a local model.
 OpenRouter runs pin one serving endpoint with fallbacks off. The CLI picks the
 highest disclosed precision that supports tool calls, cheapest first. Use
 --endpoint to pick one yourself, by provider (deepinfra) or tag (deepinfra/fp8).
